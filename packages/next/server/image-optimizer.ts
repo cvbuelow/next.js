@@ -62,6 +62,7 @@ export interface ImageParamsResult {
   mimeType: string
   sizes: number[]
   minimumCacheTTL: number
+  bgColor?: string
 }
 
 function getSupportedMimeType(options: string[], accept = ''): string {
@@ -162,7 +163,7 @@ export class ImageOptimizerCache {
       formats = ['image/webp'],
     } = imageData
     const remotePatterns = nextConfig.images?.remotePatterns || []
-    const { url, w, q } = query
+    const { url, w, q, bgColor } = query
     let href: string
 
     if (!url) {
@@ -206,6 +207,13 @@ export class ImageOptimizerCache {
       return { errorMessage: '"q" parameter (quality) is required' }
     } else if (Array.isArray(q)) {
       return { errorMessage: '"q" parameter (quality) cannot be an array' }
+    }
+
+    if (Array.isArray(bgColor)) {
+      return {
+        errorMessage:
+          '"bgColor" parameter (background color) cannot be an array',
+      }
     }
 
     const width = parseInt(w, 10)
@@ -255,6 +263,7 @@ export class ImageOptimizerCache {
       quality,
       mimeType,
       minimumCacheTTL,
+      bgColor,
     }
   }
 
@@ -263,13 +272,22 @@ export class ImageOptimizerCache {
     width,
     quality,
     mimeType,
+    bgColor,
   }: {
     href: string
     width: number
     quality: number
     mimeType: string
+    bgColor?: string
   }): string {
-    return getHash([CACHE_VERSION, href, width, quality, mimeType])
+    return getHash([
+      CACHE_VERSION,
+      href,
+      width,
+      quality,
+      mimeType,
+      `${bgColor}`,
+    ])
   }
 
   constructor({
@@ -390,6 +408,19 @@ export function getMaxAge(str: string | null): number {
   return 0
 }
 
+const isRGBString = (rgb: string) => {
+  const [r, g, b] = rgb.split(',').map((c) => parseInt(c, 10))
+  return (
+    r >= 0 &&
+    r <= 255 &&
+    g >= 0 &&
+    g <= 255 &&
+    b >= 0 &&
+    b <= 255 &&
+    rgb.split(',').length === 3
+  )
+}
+
 export async function imageOptimizer(
   _req: IncomingMessage,
   _res: ServerResponse,
@@ -405,7 +436,7 @@ export async function imageOptimizer(
   let upstreamBuffer: Buffer
   let upstreamType: string | null
   let maxAge: number
-  const { isAbsolute, href, width, mimeType, quality } = paramsResult
+  const { isAbsolute, href, width, mimeType, quality, bgColor } = paramsResult
 
   if (isAbsolute) {
     const upstreamRes = await fetch(href)
@@ -515,6 +546,15 @@ export async function imageOptimizer(
 
       if (metaWidth && metaWidth > width) {
         transformer.resize(width)
+      }
+
+      if (
+        upstreamType === PNG &&
+        typeof bgColor === 'string' &&
+        isRGBString(bgColor)
+      ) {
+        const [r, g, b] = bgColor.split(',').map((c) => parseInt(c, 10))
+        transformer.flatten({ background: { r, g, b } })
       }
 
       if (contentType === AVIF) {
