@@ -203,6 +203,10 @@ export interface ExperimentalConfig {
   outputFileTracingIncludes?: Record<string, string[]>
   swcTraceProfiling?: boolean
   forceSwcTransforms?: boolean
+  prefetch?: {
+    exclude?: string[]
+    include?: string[]
+  }
 
   /**
    * This option is removed

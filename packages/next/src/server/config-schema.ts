@@ -375,6 +375,24 @@ const configSchema = {
           minimum: 0,
           type: 'number',
         },
+        prefetch: {
+          additionalProperties: false,
+          properties: {
+            exclude: {
+              items: {
+                type: 'string',
+              },
+              type: 'array',
+            },
+            include: {
+              items: {
+                type: 'string',
+              },
+              type: 'array',
+            },
+          },
+          type: 'object',
+        },
         serverComponentsExternalPackages: {
           items: {
             type: 'string',

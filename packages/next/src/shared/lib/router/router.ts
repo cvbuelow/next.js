@@ -1,6 +1,7 @@
 // tslint:disable:no-console
 import type { ComponentType } from 'react'
 import type { DomainLocale } from '../../../server/config'
+import type { ExperimentalConfig } from '../../../server/config-shared'
 import type { MittEmitter } from '../mitt'
 import type { ParsedUrlQuery } from 'querystring'
 import type { RouterEvent } from '../../../client/router'
@@ -436,6 +437,8 @@ const manualScrollRestoration =
   })()
 
 const SSG_DATA_NOT_FOUND = Symbol('SSG_DATA_NOT_FOUND')
+
+const PREFETCH = process.env.__NEXT_PREFETCH as ExperimentalConfig['prefetch']
 
 function fetchRetry(
   url: string,
@@ -2428,6 +2431,9 @@ export default class Router implements BaseRouter {
     }
 
     const route = removeTrailingSlash(pathname)
+    const isPrefetchRoute =
+      (PREFETCH?.include && PREFETCH.include.includes(route)) ||
+      (PREFETCH?.exclude && !PREFETCH.exclude.includes(route))
 
     if (await this._bfl(asPath, resolvedAs, options.locale, true)) {
       this.components[urlPathname] = { __appRouter: true } as any
@@ -2435,12 +2441,14 @@ export default class Router implements BaseRouter {
 
     await Promise.all([
       this.pageLoader._isSsg(route).then((isSsg) => {
-        return isSsg
+        return isSsg || isPrefetchRoute
           ? fetchNextData({
               dataHref: data?.json
                 ? data?.dataHref
                 : this.pageLoader.getDataHref({
-                    href: url,
+                    href: isSsg
+                      ? url
+                      : formatWithValidation({ pathname: route, query }),
                     asPath: resolvedAs,
                     locale: locale,
                   }),

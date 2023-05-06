@@ -316,4 +316,80 @@ describe('Prerender prefetch', () => {
 
     runTests({ optimisticClientCache: false })
   })
+
+  describe('with opt-in prefetch urls defined', () => {
+    beforeAll(async () => {
+      next = await createNext({
+        files: {
+          pages: new FileRef(join(__dirname, 'app/pages-prefetch')),
+        },
+        nextConfig: {
+          experimental: {
+            prefetch: {
+              include: ['/blog/[slug]'],
+            },
+          },
+        },
+        dependencies: {},
+      })
+    })
+    afterAll(() => next.destroy())
+
+    it('should prefetch the included page', async () => {
+      const browser = await webdriver(next.url, '/')
+      let requests = []
+
+      browser.on('request', (req) => {
+        requests.push(req.url())
+      })
+
+      await check(async () => {
+        const cacheKeys = await browser.eval(
+          'Object.keys(window.next.router.sdc)'
+        )
+        return cacheKeys.some((url) => url.includes('/blog/first')) &&
+          cacheKeys.some((url) => url.includes('/blog/second'))
+          ? 'success'
+          : JSON.stringify(requests, null, 2)
+      }, 'success')
+    })
+  })
+
+  describe('with opt-out prefetch urls defined', () => {
+    beforeAll(async () => {
+      next = await createNext({
+        files: {
+          pages: new FileRef(join(__dirname, 'app/pages-prefetch')),
+        },
+        nextConfig: {
+          experimental: {
+            prefetch: {
+              exclude: ['/'],
+            },
+          },
+        },
+        dependencies: {},
+      })
+    })
+    afterAll(() => next.destroy())
+
+    it('should prefetch pages that are not excluded', async () => {
+      const browser = await webdriver(next.url, '/')
+      let requests = []
+
+      browser.on('request', (req) => {
+        requests.push(req.url())
+      })
+
+      await check(async () => {
+        const cacheKeys = await browser.eval(
+          'Object.keys(window.next.router.sdc)'
+        )
+        return cacheKeys.some((url) => url.includes('/blog/first')) &&
+          cacheKeys.some((url) => url.includes('/blog/second'))
+          ? 'success'
+          : JSON.stringify(requests, null, 2)
+      }, 'success')
+    })
+  })
 })
