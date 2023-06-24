@@ -463,11 +463,7 @@ export async function optimizeImage({
       })
     }
 
-    if (
-      contentType === PNG &&
-      typeof bgColor === 'string' &&
-      isRGBString(bgColor)
-    ) {
+    if (typeof bgColor === 'string' && isRGBString(bgColor)) {
       const [r, g, b] = bgColor.split(',').map((c) => parseInt(c, 10))
       transformer.flatten({ background: { r, g, b } })
     }
