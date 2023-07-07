@@ -17,11 +17,13 @@ import { traceGlobals } from '../trace/shared'
 import { Telemetry } from '../telemetry/storage'
 import loadConfig from '../server/config'
 import { findPagesDir } from '../lib/find-pages-dir'
-import { fileExists } from '../lib/file-exists'
+import { findRootDir } from '../lib/find-root'
+import { fileExists, FileType } from '../lib/file-exists'
 import { getNpxCommand } from '../lib/helpers/get-npx-command'
-import Watchpack from 'next/dist/compiled/watchpack'
+import Watchpack from 'watchpack'
 import stripAnsi from 'next/dist/compiled/strip-ansi'
 import { getPossibleInstrumentationHookFilenames } from '../build/worker'
+import { resetEnv } from '@next/env'
 
 let dir: string
 let isTurboSession = false
@@ -118,6 +120,7 @@ const nextDev: CliCommand = async (argv) => {
     '--port': Number,
     '--hostname': String,
     '--turbo': Boolean,
+    '--experimental-turbo': Boolean,
 
     // To align current messages with native binary.
     // Will need to adjust subcommand later.
@@ -160,7 +163,7 @@ const nextDev: CliCommand = async (argv) => {
   dir = getProjectDir(process.env.NEXT_PRIVATE_DEV_DIR || args._[0])
 
   // Check if pages dir exists and warn if not
-  if (!(await fileExists(dir, 'directory'))) {
+  if (!(await fileExists(dir, FileType.Directory))) {
     printAndExit(`> No such directory exists as the project root: ${dir}`)
   }
 
@@ -208,6 +211,7 @@ const nextDev: CliCommand = async (argv) => {
   // We do not set a default host value here to prevent breaking
   // some set-ups that rely on listening on other interfaces
   const host = args['--hostname']
+  const experimentalTurbo = args['--experimental-turbo']
 
   const devServerOptions: StartServerOptions = {
     dir,
@@ -217,9 +221,14 @@ const nextDev: CliCommand = async (argv) => {
     hostname: host,
     // This is required especially for app dir.
     useWorkers: true,
+    isExperimentalTurbo: experimentalTurbo,
   }
 
   if (args['--turbo']) {
+    process.env.TURBOPACK = '1'
+  }
+
+  if (process.env.TURBOPACK) {
     isTurboSession = true
 
     const { validateTurboNextConfig } =
@@ -271,11 +280,28 @@ const nextDev: CliCommand = async (argv) => {
       )
     }
 
+    if (process.platform === 'darwin') {
+      // rust needs stdout to be blocking, otherwise it will throw an error (on macOS at least) when writing a lot of data (logs) to it
+      // see https://github.com/napi-rs/napi-rs/issues/1630
+      // and https://github.com/nodejs/node/blob/main/doc/api/process.md#a-note-on-process-io
+      if (process.stdout._handle != null) {
+        // @ts-ignore
+        process.stdout._handle.setBlocking(true)
+      }
+      if (process.stderr._handle != null) {
+        // @ts-ignore
+        process.stderr._handle.setBlocking(true)
+      }
+    }
+
+    // Turbopack need to be in control over reading the .env files and watching them.
+    // So we need to start with a initial env to know which env vars are coming from the user.
+    resetEnv()
     let bindings: any = await loadBindings()
     let server = bindings.turbo.startDev({
       ...devServerOptions,
       showAll: args['--show-all'] ?? false,
-      root: args['--root'] ?? rawNextConfig.experimental?.outputFileTracingRoot,
+      root: args['--root'] ?? findRootDir(dir),
     })
     // Start preflight after server is listening and ignore errors:
     preflight().catch(() => {})
@@ -292,6 +318,11 @@ const nextDev: CliCommand = async (argv) => {
 
     return server
   } else {
+    if (experimentalTurbo) {
+      Log.error('Not supported yet')
+      process.exit(1)
+    }
+
     let cleanupFns: (() => Promise<void> | void)[] = []
     const runDevServer = async () => {
       const oldCleanupFns = cleanupFns
@@ -441,7 +472,7 @@ const nextDev: CliCommand = async (argv) => {
             const instrumentationFileHash = (
               require('crypto') as typeof import('crypto')
             )
-              .createHash('sha256')
+              .createHash('sha1')
               .update(await fs.promises.readFile(instrumentationFile, 'utf8'))
               .digest('hex')
 
@@ -478,7 +509,9 @@ const nextDev: CliCommand = async (argv) => {
           }
 
           previousInstrumentationFiles.clear()
-          knownFiles.forEach((_, key) => previousInstrumentationFiles.add(key))
+          knownFiles.forEach((_: any, key: any) =>
+            previousInstrumentationFiles.add(key)
+          )
         })
 
         const projectFolderWatcher = new Watchpack({

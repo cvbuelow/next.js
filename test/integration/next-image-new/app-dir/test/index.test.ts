@@ -204,6 +204,13 @@ function runTests(mode) {
           'link[rel=preload][as=image][crossorigin=anonymous][imagesrcset*="test.jpg"]'
         )
       ).toHaveLength(1)
+
+      // should preload with referrerpolicy
+      expect(
+        await browser.elementsByCss(
+          'link[rel=preload][as=image][referrerpolicy="no-referrer"][imagesrcset*="test.png"]'
+        )
+      ).toHaveLength(1)
     } finally {
       if (browser) {
         await browser.close()
@@ -765,6 +772,42 @@ function runTests(mode) {
         'Image with src "/test.png" has legacy prop "layout". Did you forget to run the codemod?'
       )
     }
+  })
+
+  it('should render picture via getImgProps', async () => {
+    const browser = await webdriver(appPort, '/picture')
+    // Wait for image to load:
+    await check(async () => {
+      const naturalWidth = await browser.eval(
+        `document.querySelector('img').naturalWidth`
+      )
+
+      if (naturalWidth === 0) {
+        throw new Error('Image did not load')
+      }
+
+      return 'ready'
+    }, 'ready')
+    const img = await browser.elementByCss('img')
+    expect(img).toBeDefined()
+    expect(await img.getAttribute('alt')).toBe('Hero')
+    expect(await img.getAttribute('width')).toBe('400')
+    expect(await img.getAttribute('height')).toBe('400')
+    expect(await img.getAttribute('fetchPriority')).toBe('high')
+    expect(await img.getAttribute('sizes')).toBeNull()
+    expect(await img.getAttribute('src')).toBe(
+      '/_next/image?url=%2Ftest_light.png&w=828&q=75'
+    )
+    expect(await img.getAttribute('srcset')).toBe(null)
+    expect(await img.getAttribute('style')).toBe('color:transparent')
+    const source1 = await browser.elementByCss('source:first-of-type')
+    expect(await source1.getAttribute('srcset')).toBe(
+      '/_next/image?url=%2Ftest.png&w=640&q=75 1x, /_next/image?url=%2Ftest.png&w=828&q=75 2x'
+    )
+    const source2 = await browser.elementByCss('source:last-of-type')
+    expect(await source2.getAttribute('srcset')).toBe(
+      '/_next/image?url=%2Ftest_light.png&w=640&q=75 1x, /_next/image?url=%2Ftest_light.png&w=828&q=75 2x'
+    )
   })
 
   if (mode === 'dev') {

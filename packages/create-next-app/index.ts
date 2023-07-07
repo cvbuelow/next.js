@@ -102,6 +102,13 @@ const program = new Commander.Command(packageJson.name)
 `
   )
   .option(
+    '--use-yarn',
+    `
+
+  Explicitly tell the CLI to bootstrap the application using Yarn
+`
+  )
+  .option(
     '-e, --example [name]|[github-url]',
     `
 
@@ -134,6 +141,8 @@ const packageManager = !!program.useNpm
   ? 'npm'
   : !!program.usePnpm
   ? 'pnpm'
+  : !!program.useYarn
+  ? 'yarn'
   : getPkgManager()
 
 async function run(): Promise<void> {
@@ -249,7 +258,7 @@ async function run(): Promise<void> {
           {
             type: 'toggle',
             name: 'typescript',
-            message: `Would you like to use ${styledTypeScript} with this project?`,
+            message: `Would you like to use ${styledTypeScript}?`,
             initial: getPrefOrDefault('typescript'),
             active: 'Yes',
             inactive: 'No',
@@ -286,7 +295,7 @@ async function run(): Promise<void> {
           onState: onPromptState,
           type: 'toggle',
           name: 'eslint',
-          message: `Would you like to use ${styledEslint} with this project?`,
+          message: `Would you like to use ${styledEslint}?`,
           initial: getPrefOrDefault('eslint'),
           active: 'Yes',
           inactive: 'No',
@@ -308,7 +317,7 @@ async function run(): Promise<void> {
           onState: onPromptState,
           type: 'toggle',
           name: 'tailwind',
-          message: `Would you like to use ${tw} with this project?`,
+          message: `Would you like to use ${tw}?`,
           initial: getPrefOrDefault('tailwind'),
           active: 'Yes',
           inactive: 'No',
@@ -330,7 +339,7 @@ async function run(): Promise<void> {
           onState: onPromptState,
           type: 'toggle',
           name: 'srcDir',
-          message: `Would you like to use ${styledSrcDir} with this project?`,
+          message: `Would you like to use ${styledSrcDir}?`,
           initial: getPrefOrDefault('srcDir'),
           active: 'Yes',
           inactive: 'No',
@@ -349,7 +358,7 @@ async function run(): Promise<void> {
           onState: onPromptState,
           type: 'toggle',
           name: 'appRouter',
-          message: `Use ${styledAppDir} (recommended)?`,
+          message: `Would you like to use ${styledAppDir}? (recommended)`,
           initial: true,
           active: 'Yes',
           inactive: 'No',

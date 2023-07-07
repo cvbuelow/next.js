@@ -8,9 +8,12 @@ import {
   IncrementalCacheValue,
   IncrementalCacheEntry,
 } from '../../response-cache'
-import { encode } from '../../../shared/lib/bloom-filter/base64-arraybuffer'
+import { encode } from '../../../shared/lib/base64-arraybuffer'
 import { encodeText } from '../../stream-utils/encode-decode'
-import { CACHE_ONE_YEAR } from '../../../lib/constants'
+import {
+  CACHE_ONE_YEAR,
+  PRERENDER_REVALIDATE_HEADER,
+} from '../../../lib/constants'
 
 function toRoute(pathname: string): string {
   return pathname.replace(/\/$/, '').replace(/\/index$/, '') || '/'
@@ -70,6 +73,7 @@ export class IncrementalCache {
   minimalMode?: boolean
   fetchCacheKeyPrefix?: string
   revalidatedTags?: string[]
+  isOnDemandRevalidate?: boolean
 
   constructor({
     fs,
@@ -102,13 +106,26 @@ export class IncrementalCache {
     fetchCacheKeyPrefix?: string
     CurCacheHandler?: typeof CacheHandler
   }) {
+    const debug = !!process.env.NEXT_PRIVATE_DEBUG_CACHE
     if (!CurCacheHandler) {
       if (fs && serverDistDir) {
+        if (debug) {
+          console.log('using filesystem cache handler')
+        }
         CurCacheHandler = FileSystemCache
       }
-      if (minimalMode && fetchCache) {
+      if (
+        FetchCache.isAvailable({ _requestHeaders: requestHeaders }) &&
+        minimalMode &&
+        fetchCache
+      ) {
+        if (debug) {
+          console.log('using fetch cache handler')
+        }
         CurCacheHandler = FetchCache
       }
+    } else if (debug) {
+      console.log('using custom cache handler', CurCacheHandler.name)
     }
 
     if (process.env.__NEXT_TEST_MAX_ISR_CACHE) {
@@ -125,9 +142,16 @@ export class IncrementalCache {
     let revalidatedTags: string[] = []
 
     if (
+      requestHeaders[PRERENDER_REVALIDATE_HEADER] ===
+      this.prerenderManifest?.preview?.previewModeId
+    ) {
+      this.isOnDemandRevalidate = true
+    }
+
+    if (
       minimalMode &&
       typeof requestHeaders['x-next-revalidated-tags'] === 'string' &&
-      requestHeaders['x-next-revalidats-tag-token'] ===
+      requestHeaders['x-next-revalidate-tag-token'] ===
         this.prerenderManifest?.preview?.previewModeId
     ) {
       revalidatedTags = requestHeaders['x-next-revalidated-tags'].split(',')
@@ -268,7 +292,9 @@ export class IncrementalCache {
       this.fetchCacheKeyPrefix || '',
       url,
       init.method,
-      init.headers,
+      typeof (init.headers || {}).keys === 'function'
+        ? Object.fromEntries(init.headers as Headers)
+        : init.headers,
       init.mode,
       init.redirect,
       init.credentials,
@@ -298,7 +324,7 @@ export class IncrementalCache {
   async get(
     pathname: string,
     fetchCache?: boolean,
-    revalidate?: number,
+    revalidate?: number | false,
     fetchUrl?: string,
     fetchIdx?: number
   ): Promise<IncrementalCacheEntry | null> {

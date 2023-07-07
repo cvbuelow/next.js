@@ -59,7 +59,6 @@ import { createErrorHandler } from './create-error-handler'
 import { getShortDynamicParamType } from './get-short-dynamic-param-type'
 import { getSegmentParam } from './get-segment-param'
 import { getCssInlinedLinkTags } from './get-css-inlined-link-tags'
-import { getServerCSSForEntries } from './get-server-css-for-entries'
 import { getPreloadableFonts } from './get-preloadable-fonts'
 import { getScriptNonceFromHeader } from './get-script-nonce-from-header'
 import { renderToString } from './render-to-string'
@@ -72,8 +71,11 @@ import {
 import { handleAction } from './action-handler'
 import { NEXT_DYNAMIC_NO_SSR_CODE } from '../../shared/lib/lazy-dynamic/no-ssr-error'
 import { warn } from '../../build/output/log'
+import { appendMutableCookies } from '../web/spec-extension/adapters/request-cookies'
 
 export const isEdgeRuntime = process.env.NEXT_RUNTIME === 'edge'
+
+const emptyLoaderTree: LoaderTree = ['', {}, {}]
 
 export type GetDynamicParamFromSegment = (
   // [slug] / [[slug]] / [...slug]
@@ -138,11 +140,12 @@ function findDynamicParamFromRouterState(
 export async function renderToHTMLOrFlight(
   req: IncomingMessage,
   res: ServerResponse,
-  pathname: string,
+  pagePath: string,
   query: NextParsedUrlQuery,
   renderOpts: RenderOpts
 ): Promise<RenderResult> {
   const isFlight = req.headers[RSC.toLowerCase()] !== undefined
+  const pathname = validateURL(req.url)
 
   const {
     buildManifest,
@@ -153,12 +156,12 @@ export async function renderToHTMLOrFlight(
     nextFontManifest,
     supportsDynamicHTML,
     nextConfigOutput,
+    serverActionsBodySizeLimit,
   } = renderOpts
 
   const appUsingSizeAdjust = nextFontManifest?.appUsingSizeAdjust
 
   const clientReferenceManifest = renderOpts.clientReferenceManifest!
-  const serverCSSManifest = renderOpts.serverCSSManifest!
 
   const capturedErrors: Error[] = []
   const allCapturedErrors: Error[] = []
@@ -219,6 +222,13 @@ export async function renderToHTMLOrFlight(
     }
     staticGenerationStore.fetchMetrics = []
     ;(renderOpts as any).fetchMetrics = staticGenerationStore.fetchMetrics
+
+    const requestStore = requestAsyncStorage.getStore()
+    if (!requestStore) {
+      throw new Error(
+        `Invariant: Render expects to have requestAsyncStorage, none found`
+      )
+    }
 
     // don't modify original query object
     query = { ...query }
@@ -347,16 +357,21 @@ export async function renderToHTMLOrFlight(
 
     let defaultRevalidate: false | undefined | number = false
 
-    // Collect all server CSS imports used by this specific entry (or entries, for parallel routes).
-    // Not that we can't rely on the CSS manifest because it tracks CSS imports per module,
-    // which can be used by multiple entries and cannot be tree-shaked in the module graph.
-    // More info: https://github.com/vercel/next.js/issues/41018
-    const serverCSSForEntries = getServerCSSForEntries(
-      serverCSSManifest!,
-      ComponentMod.pages
-    )
-
     const assetPrefix = renderOpts.assetPrefix || ''
+
+    const getAssetQueryString = (addTimestamp: boolean) => {
+      const isDev = process.env.NODE_ENV === 'development'
+      let qs = ''
+
+      if (isDev && addTimestamp) {
+        qs += `?v=${Date.now()}`
+      }
+
+      if (renderOpts.deploymentId) {
+        qs += `${isDev ? '&' : '?'}dpl=${renderOpts.deploymentId}`
+      }
+      return qs
+    }
 
     const createComponentAndStyles = async ({
       filePath,
@@ -371,9 +386,7 @@ export async function renderToHTMLOrFlight(
     }): Promise<any> => {
       const cssHrefs = getCssInlinedLinkTags(
         clientReferenceManifest,
-        serverCSSManifest!,
         filePath,
-        serverCSSForEntries,
         injectedCSS
       )
 
@@ -385,9 +398,9 @@ export async function renderToHTMLOrFlight(
             // Because of this, we add a `?v=` query to bypass the cache during
             // development. We need to also make sure that the number is always
             // increasing.
-            const fullHref = `${assetPrefix}/_next/${href}${
-              process.env.NODE_ENV === 'development' ? `?v=${Date.now()}` : ''
-            }`
+            const fullHref = `${assetPrefix}/_next/${href}${getAssetQueryString(
+              true
+            )}`
 
             // `Precedence` is an opt-in signal for React to handle resource
             // loading and deduplication, etc. It's also used as the key to sort
@@ -430,9 +443,7 @@ export async function renderToHTMLOrFlight(
       const stylesheets: string[] = layoutOrPagePath
         ? getCssInlinedLinkTags(
             clientReferenceManifest,
-            serverCSSManifest!,
             layoutOrPagePath,
-            serverCSSForEntries,
             injectedCSSWithCurrentLayout,
             true
           )
@@ -440,9 +451,7 @@ export async function renderToHTMLOrFlight(
 
       const preloadedFontFiles = layoutOrPagePath
         ? getPreloadableFonts(
-            serverCSSManifest!,
             nextFontManifest,
-            serverCSSForEntries,
             layoutOrPagePath,
             injectedFontPreloadTagsWithCurrentLayout
           )
@@ -454,7 +463,9 @@ export async function renderToHTMLOrFlight(
             const fontFilename = preloadedFontFiles[i]
             const ext = /\.(woff|woff2|eot|ttf|otf)$/.exec(fontFilename)![1]
             const type = `font/${ext}`
-            const href = `${assetPrefix}/_next/${fontFilename}`
+            const href = `${assetPrefix}/_next/${fontFilename}${getAssetQueryString(
+              false
+            )}`
             ComponentMod.preloadFont(href, type)
           }
         } else {
@@ -477,9 +488,9 @@ export async function renderToHTMLOrFlight(
             // Because of this, we add a `?v=` query to bypass the cache during
             // development. We need to also make sure that the number is always
             // increasing.
-            const fullHref = `${assetPrefix}/_next/${href}${
-              process.env.NODE_ENV === 'development' ? `?v=${Date.now()}` : ''
-            }`
+            const fullHref = `${assetPrefix}/_next/${href}${getAssetQueryString(
+              true
+            )}`
 
             // `Precedence` is an opt-in signal for React to handle resource
             // loading and deduplication, etc. It's also used as the key to sort
@@ -685,6 +696,10 @@ export async function renderToHTMLOrFlight(
         }
       }
 
+      if (staticGenerationStore?.dynamicUsageErr) {
+        throw staticGenerationStore.dynamicUsageErr
+      }
+
       /**
        * The React Component to render.
        */
@@ -699,7 +714,7 @@ export async function renderToHTMLOrFlight(
           !isValidElementType(Component)
         ) {
           throw new Error(
-            `The default export is not a React Component in page: "${pathname}"`
+            `The default export is not a React Component in page: "${page}"`
           )
         }
 
@@ -839,7 +854,6 @@ export async function renderToHTMLOrFlight(
                 templateStyles={templateStyles}
                 notFound={NotFound ? <NotFound /> : undefined}
                 notFoundStyles={notFoundStyles}
-                asNotFound={asNotFound}
                 childProp={childProp}
                 styles={childStyles}
               />,
@@ -1084,16 +1098,12 @@ export async function renderToHTMLOrFlight(
         if (layoutPath) {
           getCssInlinedLinkTags(
             clientReferenceManifest,
-            serverCSSManifest!,
             layoutPath,
-            serverCSSForEntries,
             injectedCSSWithCurrentLayout,
             true
           )
           getPreloadableFonts(
-            serverCSSManifest!,
             nextFontManifest,
-            serverCSSForEntries,
             layoutPath,
             injectedFontPreloadTagsWithCurrentLayout
           )
@@ -1179,14 +1189,18 @@ export async function renderToHTMLOrFlight(
               injectedCSS: new Set(),
               injectedFontPreloadTags: new Set(),
               rootLayoutIncluded: false,
-              asNotFound: pathname === '/404' || options?.asNotFound,
+              asNotFound: pagePath === '/404' || options?.asNotFound,
             })
           ).map((path) => path.slice(1)) // remove the '' (root) segment
+
+      const buildIdFlightDataPair = [renderOpts.buildId, flightData]
 
       // For app dir, use the bundled version of Fizz renderer (renderToReadableStream)
       // which contains the subset React.
       const readable = ComponentMod.renderToReadableStream(
-        options ? [options.actionResult, flightData] : flightData,
+        options
+          ? [options.actionResult, buildIdFlightDataPair]
+          : buildIdFlightDataPair,
         clientReferenceManifest.clientModules,
         {
           context: serverContexts,
@@ -1215,8 +1229,6 @@ export async function renderToHTMLOrFlight(
       Uint8Array,
       Uint8Array
     > = new TransformStream()
-
-    const initialCanonicalUrl = validateURL(req.url)
 
     // Get the nonce from the incoming request if it has one.
     const csp = req.headers['content-security-policy']
@@ -1292,24 +1304,29 @@ export async function renderToHTMLOrFlight(
           query
         )
 
+        const createMetadata = (tree: LoaderTree) => (
+          // Adding key={requestId} to make metadata remount for each render
+          // @ts-expect-error allow to use async server component
+          <MetadataTree
+            key={requestId}
+            tree={tree}
+            pathname={pathname}
+            searchParams={providedSearchParams}
+            getDynamicParamFromSegment={getDynamicParamFromSegment}
+          />
+        )
+
         return (
           <>
             {styles}
             <AppRouter
+              buildId={renderOpts.buildId}
               assetPrefix={assetPrefix}
-              initialCanonicalUrl={initialCanonicalUrl}
+              initialCanonicalUrl={pathname}
               initialTree={initialTree}
               initialHead={
                 <>
-                  {/* Adding key={requestId} to make metadata remount for each render */}
-                  {/* @ts-expect-error allow to use async server component */}
-                  <MetadataTree
-                    key={requestId}
-                    tree={loaderTree}
-                    pathname={pathname}
-                    searchParams={providedSearchParams}
-                    getDynamicParamFromSegment={getDynamicParamFromSegment}
-                  />
+                  {createMetadata(loaderTree)}
                   {appUsingSizeAdjust ? <meta name="next-size-adjust" /> : null}
                 </>
               }
@@ -1317,6 +1334,7 @@ export async function renderToHTMLOrFlight(
               notFound={
                 NotFound && RootLayout ? (
                   <RootLayout params={{}}>
+                    {createMetadata(emptyLoaderTree)}
                     {notFoundStyles}
                     <NotFound />
                   </RootLayout>
@@ -1361,13 +1379,13 @@ export async function renderToHTMLOrFlight(
       )
     }
 
-    getTracer().getRootSpanAttributes()?.set('next.route', pathname)
+    getTracer().getRootSpanAttributes()?.set('next.route', pagePath)
     const bodyResult = getTracer().wrap(
       AppRenderSpan.getBodyResult,
       {
-        spanName: `render route (app) ${pathname}`,
+        spanName: `render route (app) ${pagePath}`,
         attributes: {
-          'next.route': pathname,
+          'next.route': pagePath,
         },
       },
       async ({
@@ -1386,7 +1404,9 @@ export async function renderToHTMLOrFlight(
               polyfill.endsWith('.js') && !polyfill.endsWith('.module.js')
           )
           .map((polyfill) => ({
-            src: `${assetPrefix}/_next/${polyfill}`,
+            src: `${assetPrefix}/_next/${polyfill}${getAssetQueryString(
+              false
+            )}`,
             integrity: subresourceIntegrityManifest?.[polyfill],
           }))
 
@@ -1430,8 +1450,12 @@ export async function renderToHTMLOrFlight(
             ReactDOMServer: require('react-dom/server.edge'),
             element: (
               <>
-                {Array.from(serverInsertedHTMLCallbacks).map((callback) =>
-                  callback()
+                {Array.from(serverInsertedHTMLCallbacks).map(
+                  (callback, index) => (
+                    <React.Fragment key={'_next_insert' + index}>
+                      {callback()}
+                    </React.Fragment>
+                  )
                 )}
                 {polyfillsFlushed
                   ? null
@@ -1465,11 +1489,17 @@ export async function renderToHTMLOrFlight(
               bootstrapScripts: [
                 ...(subresourceIntegrityManifest
                   ? buildManifest.rootMainFiles.map((src) => ({
-                      src: `${assetPrefix}/_next/` + src,
+                      src:
+                        `${assetPrefix}/_next/` +
+                        src +
+                        getAssetQueryString(false),
                       integrity: subresourceIntegrityManifest[src],
                     }))
                   : buildManifest.rootMainFiles.map(
-                      (src) => `${assetPrefix}/_next/` + src
+                      (src) =>
+                        `${assetPrefix}/_next/` +
+                        src +
+                        getAssetQueryString(false)
                     )),
               ],
             },
@@ -1497,8 +1527,8 @@ export async function renderToHTMLOrFlight(
           }
           if (err.digest === NEXT_DYNAMIC_NO_SSR_CODE) {
             warn(
-              `Entire page ${pathname} deopted into client-side rendering. https://nextjs.org/docs/messages/deopted-into-client-rendering`,
-              pathname
+              `Entire page ${pagePath} deopted into client-side rendering. https://nextjs.org/docs/messages/deopted-into-client-rendering`,
+              pagePath
             )
           }
           if (isNotFoundError(err)) {
@@ -1506,6 +1536,15 @@ export async function renderToHTMLOrFlight(
           }
           if (isRedirectError(err)) {
             res.statusCode = 307
+            if (err.mutableCookies) {
+              const headers = new Headers()
+
+              // If there were mutable cookies set, we need to set them on the
+              // response.
+              if (appendMutableCookies(headers, err.mutableCookies)) {
+                res.setHeader('set-cookie', Array.from(headers.values()))
+              }
+            }
             res.setHeader('Location', getURLFromRedirectError(err))
           }
 
@@ -1517,7 +1556,7 @@ export async function renderToHTMLOrFlight(
                   {/* @ts-expect-error allow to use async server component */}
                   <MetadataTree
                     key={requestId}
-                    tree={['', {}, {}]}
+                    tree={emptyLoaderTree}
                     pathname={pathname}
                     searchParams={providedSearchParams}
                     getDynamicParamFromSegment={getDynamicParamFromSegment}
@@ -1532,11 +1571,15 @@ export async function renderToHTMLOrFlight(
               // Include hydration scripts in the HTML
               bootstrapScripts: subresourceIntegrityManifest
                 ? buildManifest.rootMainFiles.map((src) => ({
-                    src: `${assetPrefix}/_next/` + src,
+                    src:
+                      `${assetPrefix}/_next/` +
+                      src +
+                      getAssetQueryString(false),
                     integrity: subresourceIntegrityManifest[src],
                   }))
                 : buildManifest.rootMainFiles.map(
-                    (src) => `${assetPrefix}/_next/` + src
+                    (src) =>
+                      `${assetPrefix}/_next/` + src + getAssetQueryString(false)
                   ),
             },
           })
@@ -1561,6 +1604,8 @@ export async function renderToHTMLOrFlight(
       serverActionsManifest,
       generateFlight,
       staticGenerationStore,
+      requestStore,
+      serverActionsBodySizeLimit,
     })
 
     if (actionRequestResult === 'not-found') {
@@ -1571,7 +1616,7 @@ export async function renderToHTMLOrFlight(
 
     const renderResult = new RenderResult(
       await bodyResult({
-        asNotFound: pathname === '/404',
+        asNotFound: pagePath === '/404',
       })
     )
 
@@ -1625,7 +1670,7 @@ export async function renderToHTMLOrFlight(
     () =>
       StaticGenerationAsyncStorageWrapper.wrap(
         staticGenerationAsyncStorage,
-        { pathname, renderOpts },
+        { pathname: pagePath, renderOpts },
         () => wrappedRender()
       )
   )

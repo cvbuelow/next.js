@@ -8,16 +8,17 @@ import type { ParsedUrlQuery } from 'querystring'
 import type { Server as HTTPServer } from 'http'
 import type { UrlWithParsedQuery } from 'url'
 import type { BaseNextRequest, BaseNextResponse } from '../base-http'
-import type { MiddlewareRoutingItem, RoutingItem } from '../base-server'
+import type { MiddlewareRoutingItem } from '../base-server'
 import type { MiddlewareMatcher } from '../../build/analysis/get-page-static-info'
 import type { FunctionComponent } from 'react'
 import type { RouteMatch } from '../future/route-matches/route-match'
+import type { default as THotReloader } from './hot-reloader'
 
 import fs from 'fs'
 import { Worker } from 'next/dist/compiled/jest-worker'
 import findUp from 'next/dist/compiled/find-up'
 import { join as pathJoin, relative, resolve as pathResolve, sep } from 'path'
-import Watchpack from 'next/dist/compiled/watchpack'
+import Watchpack from 'watchpack'
 import { ampValidation } from '../../build/output'
 import {
   INSTRUMENTATION_HOOK_FILENAME,
@@ -49,7 +50,6 @@ import { removePathPrefix } from '../../shared/lib/router/utils/remove-path-pref
 import { eventCliSession } from '../../telemetry/events'
 import { Telemetry } from '../../telemetry/storage'
 import { setGlobal } from '../../trace'
-import HotReloader from './hot-reloader'
 import { createValidFileMatcher, findPageFile } from '../lib/find-page-file'
 import { getNodeOptionsWithoutInspect } from '../lib/utils'
 import {
@@ -68,10 +68,7 @@ import * as Log from '../../build/output/log'
 import isError, { getProperError } from '../../lib/is-error'
 import { getRouteRegex } from '../../shared/lib/router/utils/route-regex'
 import { getSortedRoutes } from '../../shared/lib/router/utils'
-import {
-  getStaticInfoIncludingLayouts,
-  runDependingOnPageType,
-} from '../../build/entries'
+import { getStaticInfoIncludingLayouts } from '../../build/entries'
 import { NodeNextResponse, NodeNextRequest } from '../base-http/node'
 import { normalizePathSep } from '../../shared/lib/page-path/normalize-path-sep'
 import { normalizeAppPath } from '../../shared/lib/router/utils/app-paths'
@@ -82,10 +79,9 @@ import {
   isMiddlewareFile,
   NestedMiddlewareError,
 } from '../../build/utils'
-import { getDefineEnv } from '../../build/webpack-config'
 import loadJsConfig from '../../build/load-jsconfig'
 import { formatServerError } from '../../lib/format-server-error'
-import { devPageFiles } from '../../build/webpack/plugins/next-types-plugin'
+import { devPageFiles } from '../../build/webpack/plugins/next-types-plugin/shared'
 import {
   DevRouteMatcherManager,
   RouteEnsurer,
@@ -128,8 +124,8 @@ export interface Options extends ServerOptions {
 export default class DevServer extends Server {
   private devReady: Promise<void>
   private setDevReady?: Function
-  private webpackWatcher?: Watchpack | null
-  private hotReloader?: HotReloader
+  private webpackWatcher?: any | null
+  private hotReloader?: THotReloader
   private isCustomServer: boolean
   protected sortedRoutes?: string[]
   private addedUpgradeListener = false
@@ -138,7 +134,6 @@ export default class DevServer extends Server {
   private actualMiddlewareFile?: string
   private actualInstrumentationHookFile?: string
   private middleware?: MiddlewareRoutingItem
-  private edgeFunctions?: RoutingItem[]
   private verifyingTypeScript?: boolean
   private usingTypeScript?: boolean
   private originalFetch: typeof fetch
@@ -431,20 +426,22 @@ export default class DevServer extends Server {
       const fileWatchTimes = new Map()
       let enabledTypeScript = this.usingTypeScript
       let previousClientRouterFilters: any
+      let previousConflictingPagePaths: Set<string> = new Set()
 
       wp.on('aggregated', async () => {
         let middlewareMatchers: MiddlewareMatcher[] | undefined
         const routedPages: string[] = []
         const knownFiles = wp.getTimeInfoEntries()
         const appPaths: Record<string, string[]> = {}
-        const edgeRoutesSet = new Set<string>()
         const pageNameSet = new Set<string>()
         const conflictingAppPagePaths = new Set<string>()
         const appPageFilePaths = new Map<string, string>()
         const pagesPageFilePaths = new Map<string, string>()
 
         let envChange = false
+        let clientRouterFilterChange = false
         let tsconfigChange = false
+        let conflictingPageChange = 0
 
         devPageFiles.clear()
 
@@ -500,17 +497,12 @@ export default class DevServer extends Server {
             pagesType: 'root',
           })
 
-          const staticInfo = await getStaticInfoIncludingLayouts({
-            pageFilePath: fileName,
-            config: this.nextConfig,
-            appDir: this.appDir,
-            page: rootFile,
-            isDev: true,
-            isInsideAppDir: isAppPath,
-            pageExtensions: this.nextConfig.pageExtensions,
-          })
-
           if (isMiddlewareFile(rootFile)) {
+            const staticInfo = await this.getStaticInfo({
+              fileName,
+              rootFile,
+              isAppPath,
+            })
             if (this.nextConfig.output === 'export') {
               Log.error(
                 'Middleware cannot be used with "output: export". See more info here: https://nextjs.org/docs/advanced-features/static-html-export'
@@ -600,35 +592,34 @@ export default class DevServer extends Server {
             continue
           }
 
-          await runDependingOnPageType({
-            page: pageName,
-            pageRuntime: staticInfo.runtime,
-            onClient: () => {},
-            onServer: () => {
-              routedPages.push(pageName)
-            },
-            onEdgeServer: () => {
-              routedPages.push(pageName)
-              edgeRoutesSet.add(pageName)
-            },
-          })
+          routedPages.push(pageName)
         }
 
         const numConflicting = conflictingAppPagePaths.size
-        if (numConflicting > 0) {
-          Log.error(
-            `Conflicting app and page file${
+        conflictingPageChange =
+          numConflicting - previousConflictingPagePaths.size
+
+        if (conflictingPageChange !== 0) {
+          if (numConflicting > 0) {
+            let errorMessage = `Conflicting app and page file${
               numConflicting === 1 ? ' was' : 's were'
-            } found, please remove the conflicting files to continue:`
-          )
-          for (const p of conflictingAppPagePaths) {
-            const appPath = relative(this.dir, appPageFilePaths.get(p)!)
-            const pagesPath = relative(this.dir, pagesPageFilePaths.get(p)!)
-            Log.error(`  "${pagesPath}" - "${appPath}"`)
+            } found, please remove the conflicting files to continue:\n`
+
+            for (const p of conflictingAppPagePaths) {
+              const appPath = relative(this.dir, appPageFilePaths.get(p)!)
+              const pagesPath = relative(this.dir, pagesPageFilePaths.get(p)!)
+              errorMessage += `  "${pagesPath}" - "${appPath}"\n`
+            }
+            this.hotReloader?.setHmrServerError(new Error(errorMessage))
+          } else if (numConflicting === 0) {
+            await this.matchers.reload()
+            this.hotReloader?.clearHmrServerError()
           }
         }
-        let clientRouterFilters: any
 
+        previousConflictingPagePaths = conflictingAppPagePaths
+
+        let clientRouterFilters: any
         if (this.nextConfig.experimental.clientRouterFilter) {
           clientRouterFilters = createClientRouterFilter(
             Object.keys(appPaths),
@@ -645,7 +636,7 @@ export default class DevServer extends Server {
             JSON.stringify(previousClientRouterFilters) !==
               JSON.stringify(clientRouterFilters)
           ) {
-            envChange = true
+            clientRouterFilterChange = true
             previousClientRouterFilters = clientRouterFilters
           }
         }
@@ -660,7 +651,7 @@ export default class DevServer extends Server {
             .catch(() => {})
         }
 
-        if (envChange || tsconfigChange) {
+        if (clientRouterFilterChange || envChange || tsconfigChange) {
           if (envChange) {
             this.loadEnvConfig({
               dev: true,
@@ -722,7 +713,7 @@ export default class DevServer extends Server {
               })
             }
 
-            if (envChange) {
+            if (envChange || clientRouterFilterChange) {
               config.plugins?.forEach((plugin: any) => {
                 // we look for the DefinePlugin definitions so we can
                 // update them on the active compilers
@@ -731,6 +722,8 @@ export default class DevServer extends Server {
                   typeof plugin.definitions === 'object' &&
                   plugin.definitions.__NEXT_DEFINE_ENV
                 ) {
+                  const { getDefineEnv } =
+                    require('../../build/webpack-config') as typeof import('../../build/webpack-config')
                   const newDefine = getDefineEnv({
                     dev: true,
                     config: this.nextConfig,
@@ -752,7 +745,9 @@ export default class DevServer extends Server {
               })
             }
           })
-          this.hotReloader?.invalidate()
+          this.hotReloader?.invalidate({
+            reloadAfterInvalidation: envChange,
+          })
         }
 
         if (nestedMiddleware.length > 0) {
@@ -770,19 +765,6 @@ export default class DevServer extends Server {
         this.appPathRoutes = Object.fromEntries(
           Object.entries(appPaths).map(([k, v]) => [k, v.sort()])
         )
-        const edgeRoutes = Array.from(edgeRoutesSet)
-        this.edgeFunctions = getSortedRoutes(edgeRoutes).map((page) => {
-          const matchedAppPaths = this.getOriginalAppPaths(page)
-          if (Array.isArray(matchedAppPaths)) {
-            page = matchedAppPaths[0]
-          }
-          const edgeRegex = getRouteRegex(page)
-          return {
-            match: getRouteMatcher(edgeRegex),
-            page,
-            re: edgeRegex.re,
-          }
-        })
 
         this.middleware = middlewareMatchers
           ? {
@@ -793,10 +775,12 @@ export default class DevServer extends Server {
           : undefined
 
         this.customRoutes = await loadCustomRoutes(this.nextConfig)
-        this.customRoutes.rewrites.beforeFiles.unshift(
+        const { rewrites } = this.customRoutes
+
+        this.customRoutes.rewrites.beforeFiles.push(
           ...generateInterceptionRoutesRewrites(Object.keys(appPaths))
         )
-        const { rewrites } = this.customRoutes
+
         if (
           rewrites.beforeFiles.length ||
           rewrites.afterFiles.length ||
@@ -830,7 +814,9 @@ export default class DevServer extends Server {
             !this.sortedRoutes?.every((val, idx) => val === sortedRoutes[idx])
           ) {
             // emit the change so clients fetch the update
-            this.hotReloader?.send(undefined, { devPagesManifest: true })
+            this.hotReloader?.send('devPagesManifestUpdate', {
+              devPagesManifest: true,
+            })
           }
           this.sortedRoutes = sortedRoutes
 
@@ -915,6 +901,9 @@ export default class DevServer extends Server {
 
     // router worker does not start webpack compilers
     if (!this.isRenderWorker) {
+      const { default: HotReloader } =
+        require('./hot-reloader') as typeof import('./hot-reloader')
+
       this.hotReloader = new HotReloader(this.dir, {
         pagesDir: this.pagesDir,
         distDir: this.distDir,
@@ -926,6 +915,7 @@ export default class DevServer extends Server {
         telemetry,
       })
     }
+
     await super.prepareImpl()
     await this.addExportPathMapRoutes()
     await this.hotReloader?.start()
@@ -1025,9 +1015,7 @@ export default class DevServer extends Server {
       )
     }
     if (appFile && pagesFile) {
-      throw new Error(
-        `Conflicting app and page file found: "app${appFile}" and "pages${pagesFile}". Please remove one to continue.`
-      )
+      return false
     }
 
     return Boolean(appFile || pagesFile)
@@ -1107,7 +1095,7 @@ export default class DevServer extends Server {
               this.hotReloader?.onHMR(req, socket, head)
             }
           } else {
-            this.handleUpgrade(req, socket, head)
+            this.handleUpgrade(req as any as NodeNextRequest, socket, head)
           }
         })
       }
@@ -1328,10 +1316,12 @@ export default class DevServer extends Server {
     if (isError(err) && err.stack) {
       try {
         const frames = parseStack(err.stack!)
+        // Filter out internal edge related runtime stack
         const frame = frames.find(
           ({ file }) =>
             !file?.startsWith('eval') &&
             !file?.includes('web/adapter') &&
+            !file?.includes('web/globals') &&
             !file?.includes('sandbox/context') &&
             !file?.includes('<anonymous>')
         )
@@ -1452,15 +1442,7 @@ export default class DevServer extends Server {
     return this.middleware
   }
 
-  protected getEdgeFunctionsPages() {
-    return this.edgeFunctions ? this.edgeFunctions.map(({ page }) => page) : []
-  }
-
   protected getServerComponentManifest() {
-    return undefined
-  }
-
-  protected getServerCSSManifest() {
     return undefined
   }
 
@@ -1777,7 +1759,6 @@ export default class DevServer extends Server {
       // manifest.
       if (!!this.appDir) {
         this.clientReferenceManifest = super.getServerComponentManifest()
-        this.serverCSSManifest = super.getServerCSSManifest()
       }
       this.nextFontManifest = super.getNextFontManifest()
       // before we re-evaluate a route module, we want to restore globals that might
@@ -1816,7 +1797,21 @@ export default class DevServer extends Server {
     return await loadDefaultErrorComponents(this.distDir)
   }
 
-  protected setImmutableAssetCacheControl(res: BaseNextResponse): void {
+  protected setImmutableAssetCacheControl(
+    res: BaseNextResponse,
+    pathSegments: string[]
+  ): void {
+    // `next/font` generates checksum in the filepath even in dev,
+    // we can safely cache fonts to avoid FOUC of fonts during development.
+    if (
+      pathSegments[0] === 'media' &&
+      pathSegments[1] &&
+      /\.(woff|woff2|eot|ttf|otf)$/.test(pathSegments[1])
+    ) {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+      return
+    }
+
     res.setHeader('Cache-Control', 'no-store, must-revalidate')
   }
 
@@ -1848,6 +1843,30 @@ export default class DevServer extends Server {
 
     // Return the very first error we found.
     return errors[0]
+  }
+
+  async getStaticInfo({
+    fileName,
+    rootFile,
+    isAppPath,
+  }: {
+    fileName: string
+    rootFile: string
+    isAppPath: boolean
+  }) {
+    if (this.isRenderWorker) {
+      return this.invokeIpcMethod('getStaticInfo', [fileName])
+    } else {
+      return getStaticInfoIncludingLayouts({
+        pageFilePath: fileName,
+        config: this.nextConfig,
+        appDir: this.appDir,
+        page: rootFile,
+        isDev: true,
+        isInsideAppDir: isAppPath,
+        pageExtensions: this.nextConfig.pageExtensions,
+      })
+    }
   }
 
   protected isServableUrl(untrustedFileUrl: string): boolean {

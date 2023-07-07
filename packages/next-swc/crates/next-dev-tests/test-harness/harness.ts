@@ -7,8 +7,10 @@ declare global {
   // We need to extract only the call signature as `autoReady(jest.describe)` drops all the other properties
   var describe: AutoReady<typeof jest.describe>
   var it: AutoReady<typeof jest.it>
-  var READY: (arg: string) => void
+  var TURBOPACK_READY: (arg: string) => void
+  var TURBOPACK_CHANGE_FILE: (arg: string) => void
   var nsObj: (obj: any) => any
+  var __turbopackFileChanged: (id: string, error: Error) => void
 
   interface Window {
     NEXT_HYDRATED?: boolean
@@ -62,8 +64,8 @@ function markReady() {
     isReady = true
     requestIdleCallback(
       () => {
-        if (typeof READY === 'function') {
-          READY('')
+        if (typeof TURBOPACK_READY === 'function') {
+          TURBOPACK_READY('')
         } else {
           console.info(
             '%cTurbopack tests:',
@@ -83,14 +85,26 @@ export function wait(ms: number): Promise<void> {
   })
 }
 
-async function waitForPath(contentWindow: Window, path: string): Promise<void> {
+export async function waitForCondition(
+  predicate: () => boolean,
+  timeout: number | null = null
+): Promise<void> {
+  const start = Date.now()
   while (true) {
-    if (contentWindow.location.pathname === path) {
+    if (predicate()) {
       break
     }
 
     await wait(1)
+
+    if (timeout != null && Date.now() - start > timeout) {
+      throw new Error('Timed out waiting for condition')
+    }
   }
+}
+
+async function waitForPath(contentWindow: Window, path: string): Promise<void> {
+  return waitForCondition(() => contentWindow.location.pathname === path)
 }
 
 /**
@@ -119,7 +133,8 @@ export function waitForLoaded(iframe: HTMLIFrameElement): Promise<void> {
   return new Promise((resolve) => {
     if (
       iframe.contentDocument != null &&
-      iframe.contentDocument.readyState === 'complete'
+      iframe.contentDocument.readyState === 'complete' &&
+      iframe.contentDocument.documentURI !== 'about:blank'
     ) {
       resolve()
     } else {
@@ -133,11 +148,12 @@ export function waitForLoaded(iframe: HTMLIFrameElement): Promise<void> {
 }
 
 export function waitForSelector(
-  node: ParentNode | HTMLIFrameElement | ShadowRoot,
+  node: HTMLIFrameElement | ShadowRoot,
   selector: string
 ): Promise<Element> {
   return new Promise((resolve, reject) => {
-    const document = 'contentDocument' in node ? node.contentDocument! : node
+    const document =
+      'contentDocument' in node ? node.contentDocument!.documentElement : node
     const timeout = 30000
     let element = document.querySelector(selector)
     if (element) {
@@ -154,14 +170,20 @@ export function waitForSelector(
     if (timeout) {
       setTimeout(() => {
         observer.disconnect()
-        reject(new Error(`Timed out waiting for selector "${selector}"`))
+        reject(
+          new Error(
+            `Timed out waiting for selector "${selector}" in "${document}"\n\nNode content: "${
+              'innerHTML' in document ? document.innerHTML : 'no innerHTML'
+            }"`
+          )
+        )
       }, timeout)
     }
   })
 }
 
 export async function waitForErrorOverlay(
-  node: ParentNode | HTMLIFrameElement
+  node: HTMLIFrameElement
 ): Promise<ShadowRoot> {
   let element = await waitForSelector(node, 'nextjs-portal')
   return element.shadowRoot!
@@ -209,4 +231,45 @@ export function markAsHydrated() {
   if (typeof window.onNextHydrated === 'function') {
     window.onNextHydrated()
   }
+}
+
+const fileChangedResolvers: Map<
+  string,
+  { resolve: (value: unknown) => void; reject: (error: Error) => void }
+> = new Map()
+
+globalThis.__turbopackFileChanged = (id: string, error?: Error) => {
+  const resolver = fileChangedResolvers.get(id)
+  if (resolver == null) {
+    throw new Error(`No resolver found for id ${id}`)
+  } else if (error != null) {
+    resolver.reject(error)
+  } else {
+    resolver.resolve(null)
+  }
+}
+
+function unsafeUniqueId(): string {
+  const LENGTH = 10
+  const BASE = 16
+  return Math.floor(Math.random() * Math.pow(BASE, LENGTH))
+    .toString(BASE)
+    .slice(0, LENGTH)
+}
+
+export async function changeFile(
+  path: string,
+  find: string,
+  replaceWith: string
+) {
+  return new Promise((resolve, reject) => {
+    let id
+    while ((id = unsafeUniqueId())) {
+      if (!fileChangedResolvers.has(id)) break
+    }
+
+    fileChangedResolvers.set(id, { resolve, reject })
+
+    TURBOPACK_CHANGE_FILE(JSON.stringify({ path, id, find, replaceWith }))
+  })
 }

@@ -24,6 +24,7 @@ export const DOT_NEXT_ALIAS = 'private-dot-next'
 export const ROOT_DIR_ALIAS = 'private-next-root-dir'
 export const APP_DIR_ALIAS = 'private-next-app-dir'
 export const RSC_MOD_REF_PROXY_ALIAS = 'private-next-rsc-mod-ref-proxy'
+export const RSC_ACTION_VALIDATE_ALIAS = 'private-next-rsc-action-validate'
 export const RSC_ACTION_PROXY_ALIAS = 'private-next-rsc-action-proxy'
 export const RSC_ACTION_CLIENT_WRAPPER_ALIAS =
   'private-next-rsc-action-client-wrapper'
@@ -94,4 +95,12 @@ export const WEBPACK_LAYERS = {
   middleware: 'middleware',
   edgeAsset: 'edge-asset',
   appClient: 'app-client',
+  metadataImage: 'app-metadata-image',
+}
+
+export const WEBPACK_RESOURCE_QUERIES = {
+  edgeSSREntry: '__next_edge_ssr_entry__',
+  metadata: '__next_metadata__',
+  metadataRoute: '__next_metadata_route__',
+  metadataImageMeta: '__next_metadata_image_meta__',
 }

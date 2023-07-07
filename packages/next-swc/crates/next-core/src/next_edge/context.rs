@@ -1,5 +1,6 @@
 use anyhow::Result;
-use turbo_binding::{
+use turbo_tasks::Value;
+use turbopack_binding::{
     turbo::tasks_fs::FileSystemPathVc,
     turbopack::{
         core::{
@@ -9,8 +10,7 @@ use turbo_binding::{
                 FreeVarReference, FreeVarReferencesVc,
             },
             environment::{
-                EdgeWorkerEnvironment, EnvironmentIntention, EnvironmentVc, ExecutionEnvironment,
-                ServerAddrVc,
+                EdgeWorkerEnvironment, EnvironmentVc, ExecutionEnvironment, ServerAddrVc,
             },
             free_var_references,
         },
@@ -18,7 +18,6 @@ use turbo_binding::{
         turbopack::resolve_options_context::{ResolveOptionsContext, ResolveOptionsContextVc},
     },
 };
-use turbo_tasks::Value;
 
 use crate::{
     next_config::NextConfigVc, next_import_map::get_next_edge_import_map,
@@ -38,12 +37,12 @@ fn defines() -> CompileTimeDefines {
 }
 
 #[turbo_tasks::function]
-pub fn next_edge_defines() -> CompileTimeDefinesVc {
+fn next_edge_defines() -> CompileTimeDefinesVc {
     defines().cell()
 }
 
 #[turbo_tasks::function]
-pub fn next_edge_free_vars(project_path: FileSystemPathVc) -> FreeVarReferencesVc {
+fn next_edge_free_vars(project_path: FileSystemPathVc) -> FreeVarReferencesVc {
     free_var_references!(
         ..defines().into_iter(),
         Buffer = FreeVarReference::EcmaScriptModule {
@@ -64,14 +63,10 @@ pub fn next_edge_free_vars(project_path: FileSystemPathVc) -> FreeVarReferencesV
 pub fn get_edge_compile_time_info(
     project_path: FileSystemPathVc,
     server_addr: ServerAddrVc,
-    intention: Value<EnvironmentIntention>,
 ) -> CompileTimeInfoVc {
-    CompileTimeInfo::builder(EnvironmentVc::new(
-        Value::new(ExecutionEnvironment::EdgeWorker(
-            EdgeWorkerEnvironment { server_addr }.into(),
-        )),
-        intention,
-    ))
+    CompileTimeInfo::builder(EnvironmentVc::new(Value::new(
+        ExecutionEnvironment::EdgeWorker(EdgeWorkerEnvironment { server_addr }.into()),
+    )))
     .defines(next_edge_defines())
     .free_var_references(next_edge_free_vars(project_path))
     .cell()
