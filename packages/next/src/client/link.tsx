@@ -652,10 +652,7 @@ const Link = React.forwardRef<HTMLAnchorElement, LinkPropsReal>(
           return
         }
 
-        if (
-          (!prefetchEnabled || process.env.NODE_ENV === 'development') &&
-          isAppRouter
-        ) {
+        if (!prefetchEnabled || process.env.NODE_ENV === 'development') {
           return
         }
 

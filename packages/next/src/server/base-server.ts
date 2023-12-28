@@ -117,6 +117,10 @@ import {
   type RouteMatch,
 } from './future/route-matches/route-match'
 
+const {
+  makeResponseHandler,
+} = require('../../../../src/@utilities/serverResponse')
+
 export type FindComponentsResult = {
   components: LoadComponentsReturnType
   query: NextParsedUrlQuery
@@ -192,6 +196,7 @@ export type RequestContext = {
   pathname: string
   query: NextParsedUrlQuery
   renderOpts: RenderOptsPartial
+  pathnameOverride?: string
 }
 
 export class NoFallbackError extends Error {}
@@ -220,6 +225,7 @@ export default abstract class Server<ServerOptions extends Options = Options> {
   protected readonly distDir: string
   protected readonly publicDir: string
   protected readonly hasStaticDir: boolean
+  protected readonly onResponse: (arg: any) => void
   protected readonly hasAppDir: boolean
   protected readonly pagesManifest?: PagesManifest
   protected readonly appPathsManifest?: PagesManifest
@@ -492,6 +498,7 @@ export default abstract class Server<ServerOptions extends Options = Options> {
     this.setAssetPrefix(assetPrefix)
 
     this.responseCache = this.getResponseCache({ dev })
+    this.onResponse = makeResponseHandler()
   }
 
   protected getRoutes(): {
@@ -1149,6 +1156,8 @@ export default abstract class Server<ServerOptions extends Options = Options> {
         // In dev, we should not cache pages for any reason.
         res.setHeader('Cache-Control', 'no-store, must-revalidate')
       }
+      this.onResponse({ ctx, body })
+
       return this.sendRenderResult(req, res, {
         result: body,
         type,
@@ -2249,13 +2258,16 @@ export default abstract class Server<ServerOptions extends Options = Options> {
 
     try {
       for await (const match of this.matchers.matchAll(pathname, options)) {
+        const pathnameOverride =
+          match.definition.pathnameOverride || match.definition.pathname
+        // Pass this up the call stack so it can be used for tracking
+        ctx.pathnameOverride = pathnameOverride
         const result = await this.renderPageComponent(
           {
             ...ctx,
             // Use the overridden pathname if available, otherwise use the
             // original pathname.
-            pathname:
-              match.definition.pathnameOverride || match.definition.pathname,
+            pathname: pathnameOverride,
             renderOpts: {
               ...ctx.renderOpts,
               params: match.params,
