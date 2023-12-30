@@ -823,6 +823,7 @@ export async function renderToHTMLImpl(
             ...(isPreview
               ? { draftMode: true, preview: true, previewData: previewData }
               : undefined),
+            res,
             locales: renderOpts.locales,
             locale: renderOpts.locale,
             defaultLocale: renderOpts.defaultLocale,

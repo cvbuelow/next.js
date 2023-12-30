@@ -108,6 +108,7 @@ export async function startServer({
   if (keepAliveTimeout) {
     server.keepAliveTimeout = keepAliveTimeout
   }
+  server.requestTimeout = 60000
   server.on('upgrade', async (req, socket, head) => {
     try {
       sockets.add(socket)

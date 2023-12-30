@@ -426,13 +426,14 @@ export class IncrementalCache {
   // populate the incremental cache with new data
   async set(
     pathname: string,
-    data: IncrementalCacheValue | null,
+    data: (IncrementalCacheValue & { pageData?: any }) | null,
     revalidateSeconds?: number | false,
     fetchCache?: boolean,
     fetchUrl?: string,
     fetchIdx?: number
   ) {
-    if (this.dev && !fetchCache) return
+    if ((this.dev && !fetchCache) || data?.pageData?.pageProps?.forbidden)
+      return
     // fetchCache has upper limit of 2MB per-entry currently
     if (fetchCache && JSON.stringify(data).length > 2 * 1024 * 1024) {
       if (this.dev) {
