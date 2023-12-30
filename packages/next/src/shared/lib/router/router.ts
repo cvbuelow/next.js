@@ -61,6 +61,7 @@ declare global {
 
 interface RouteProperties {
   shallow: boolean
+  isModelPage?: boolean
 }
 
 interface TransitionOptions {
@@ -98,6 +99,9 @@ interface MiddlewareEffectParams<T extends FetchDataOutput> {
 export async function matchesMiddleware<T extends FetchDataOutput>(
   options: MiddlewareEffectParams<T>
 ): Promise<boolean> {
+  // Skip call to server to run middleware.ts during client side navigation since everything in there
+  // is only needed for server side requests. This will improve client side navigation performance
+  if (typeof window !== 'undefined') return false
   const matchers = await Promise.resolve(
     options.router.pageLoader.getMiddleware()
   )
@@ -444,6 +448,7 @@ const manualScrollRestoration =
 const SSG_DATA_NOT_FOUND = Symbol('SSG_DATA_NOT_FOUND')
 
 const PREFETCH = process.env.__NEXT_PREFETCH as ExperimentalConfig['prefetch']
+const MODEL_PAGE_PATH = '/designer/[userName]/3d-model/[modelIdentifier]'
 
 function fetchRetry(
   url: string,
@@ -1526,7 +1531,10 @@ export default class Router implements BaseRouter {
         query,
         as,
         resolvedAs,
-        routeProps,
+        routeProps: {
+          ...routeProps,
+          isModelPage: pathname === MODEL_PAGE_PATH,
+        },
         locale: nextState.locale,
         isPreview: nextState.isPreview,
         hasMiddleware: isMiddlewareMatch,
@@ -1968,7 +1976,10 @@ export default class Router implements BaseRouter {
       const handleCancelled = getCancelledHandler({ route, router: this })
 
       let existingInfo: PrivateRouteInfo | undefined = this.components[route]
-      if (routeProps.shallow && existingInfo && this.route === route) {
+      if (
+        (routeProps.isModelPage && existingInfo) ||
+        (routeProps.shallow && existingInfo && this.route === route)
+      ) {
         return existingInfo
       }
 
@@ -2091,7 +2102,7 @@ export default class Router implements BaseRouter {
           (res) => ({
             Component: res.page,
             styleSheets: res.styleSheets,
-            __N_SSG: res.mod.__N_SSG,
+            __N_SSG: pathname === MODEL_PAGE_PATH ? false : res.mod.__N_SSG,
             __N_SSP: res.mod.__N_SSP,
           })
         ))
