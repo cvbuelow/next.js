@@ -288,24 +288,12 @@ export const configSchema: zod.ZodType<NextConfig> = z.lazy(() =>
         ppr: z.boolean().optional(),
         taint: z.boolean().optional(),
         proxyTimeout: z.number().gte(0).optional(),
-        prefetch: {
-          additionalProperties: false,
-          properties: {
-            exclude: {
-              items: {
-                type: 'string',
-              },
-              type: 'array',
-            },
-            include: {
-              items: {
-                type: 'string',
-              },
-              type: 'array',
-            },
-          },
-          type: 'object',
-        },
+        prefetch: z
+          .object({
+            exclude: z.array(z.string()).optional(),
+            include: z.array(z.string()).optional(),
+          })
+          .optional(),
         serverComponentsExternalPackages: z.array(z.string()).optional(),
         scrollRestoration: z.boolean().optional(),
         sri: z
