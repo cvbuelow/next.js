@@ -130,9 +130,10 @@ import { PrefetchRSCPathnameNormalizer } from './future/normalizers/request/pref
 import { NextDataPathnameNormalizer } from './future/normalizers/request/next-data'
 import { getIsServerAction } from './lib/server-action-request-meta'
 
-const {
-  makeResponseHandler,
-} = require('../../../../src/@utilities/serverResponse')
+// Uncomment this when patching nextjs in thangs-next since the nextjs build won't find this file
+// const {
+//   makeResponseHandler,
+// } = require('../../../../src/@utilities/serverResponse')
 
 export type FindComponentsResult = {
   components: LoadComponentsReturnType
@@ -577,7 +578,9 @@ export default abstract class Server<ServerOptions extends Options = Options> {
 
     this.setAssetPrefix(assetPrefix)
     this.responseCache = this.getResponseCache({ dev })
-    this.onResponse = makeResponseHandler()
+    // Uncomment this when patching nextjs in thangs-next
+    // this.onResponse = makeResponseHandler()
+    this.onResponse = () => {}
   }
 
   protected reloadMatchers() {
@@ -3024,8 +3027,7 @@ export default abstract class Server<ServerOptions extends Options = Options> {
           continue
         }
 
-        const pathnameOverride =
-          match.definition.pathnameOverride || match.definition.pathname
+        const pathnameOverride = match.definition.pathname
         // Pass this up the call stack so it can be used for tracking
         ctx.pathnameOverride = pathnameOverride
         const result = await this.renderPageComponent(
