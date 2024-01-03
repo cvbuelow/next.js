@@ -81,7 +81,7 @@ with:
     ~/.npm
     ${{ github.workspace }}/.next/cache
   # Generate a new cache whenever packages or source files change.
-  key: ${{ runner.os }}-nextjs-${{ hashFiles('**/package-lock.json') }}-${{ hashFiles('**/*.[jt]s', '**/*.[jt]sx') }}
+  key: ${{ runner.os }}-nextjs-${{ hashFiles('**/package-lock.json') }}-${{ hashFiles('**/*.js', '**/*.jsx', '**/*.ts', '**/*.tsx') }}
   # If source files changed but packages didn't, rebuild from a prior cache.
   restore-keys: |
     ${{ runner.os }}-nextjs-${{ hashFiles('**/package-lock.json') }}-
@@ -125,4 +125,44 @@ Using Azure Pipelines' [Cache task](https://docs.microsoft.com/en-us/azure/devop
   inputs:
     key: next | $(Agent.OS) | yarn.lock
     path: '$(System.DefaultWorkingDirectory)/.next/cache'
+```
+
+## Jenkins (Pipeline)
+
+Using Jenkins' [Job Cacher](https://www.jenkins.io/doc/pipeline/steps/jobcacher/) plugin, add the following build step to your `Jenkinsfile` where you would normally run `next build` or `npm install`:
+
+```yaml
+stage("Restore npm packages") {
+    steps {
+        // Writes lock-file to cache based on the GIT_COMMIT hash
+        writeFile file: "next-lock.cache", text: "$GIT_COMMIT"
+
+        cache(caches: [
+            arbitraryFileCache(
+                path: "node_modules",
+                includes: "**/*",
+                cacheValidityDecidingFile: "package-lock.json"
+            )
+        ]) {
+            sh "npm install"
+        }
+    }
+}
+stage("Build") {
+    steps {
+        // Writes lock-file to cache based on the GIT_COMMIT hash
+        writeFile file: "next-lock.cache", text: "$GIT_COMMIT"
+
+        cache(caches: [
+            arbitraryFileCache(
+                path: ".next/cache",
+                includes: "**/*",
+                cacheValidityDecidingFile: "next-lock.cache"
+            )
+        ]) {
+            // aka `next build`
+            sh "npm run build"
+        }
+    }
+}
 ```

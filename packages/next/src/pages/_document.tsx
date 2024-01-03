@@ -1,4 +1,5 @@
-import React, { ReactElement, ReactNode } from 'react'
+import React from 'react'
+import type { ReactElement, ReactNode } from 'react'
 import {
   OPTIMIZED_FONT_PROVIDERS,
   NEXT_BUILTIN_DOCUMENT,
@@ -13,14 +14,18 @@ import type {
 import type { ScriptProps } from '../client/script'
 import type { NextFontManifest } from '../build/webpack/plugins/next-font-manifest-plugin'
 
-import { BuildManifest, getPageFiles } from '../server/get-page-files'
+import { getPageFiles } from '../server/get-page-files'
+import type { BuildManifest } from '../server/get-page-files'
 import { htmlEscapeJsonString } from '../server/htmlescape'
 import isError from '../lib/is-error'
 
-import { HtmlContext, useHtmlContext } from '../shared/lib/html-context'
-import type { HtmlProps } from '../shared/lib/html-context'
+import {
+  HtmlContext,
+  useHtmlContext,
+} from '../shared/lib/html-context.shared-runtime'
+import type { HtmlProps } from '../shared/lib/html-context.shared-runtime'
 
-export { DocumentContext, DocumentInitialProps, DocumentProps }
+export type { DocumentContext, DocumentInitialProps, DocumentProps }
 
 export type OriginProps = {
   nonce?: string
@@ -354,8 +359,7 @@ function getAmpPath(ampPath: string, asPath: string): string {
 function getNextFontLinkTags(
   nextFontManifest: NextFontManifest | undefined,
   dangerousAsPath: string,
-  assetPrefix: string = '',
-  assetQueryString: string = ''
+  assetPrefix: string = ''
 ) {
   if (!nextFontManifest) {
     return {
@@ -378,11 +382,6 @@ function getNextFontLinkTags(
     (appFontsEntry || pageFontsEntry)
   )
 
-  // we only add if the dpl query is present for fonts
-  if (!assetQueryString.includes('dpl=')) {
-    assetQueryString = ''
-  }
-
   return {
     preconnect: preconnectToSelf ? (
       <link
@@ -401,9 +400,7 @@ function getNextFontLinkTags(
             <link
               key={fontFile}
               rel="preload"
-              href={`${assetPrefix}/_next/${encodeURI(
-                fontFile
-              )}${assetQueryString}`}
+              href={`${assetPrefix}/_next/${encodeURI(fontFile)}`}
               as="font"
               type={`font/${ext}`}
               crossOrigin="anonymous"
@@ -800,8 +797,7 @@ export class Head extends React.Component<HeadProps> {
     const nextFontLinkTags = getNextFontLinkTags(
       nextFontManifest,
       dangerousAsPath,
-      assetPrefix,
-      this.context.assetQueryString
+      assetPrefix
     )
 
     return (

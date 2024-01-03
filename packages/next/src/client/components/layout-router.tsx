@@ -1,10 +1,9 @@
 'use client'
 
-import type { ChildSegmentMap } from '../../shared/lib/app-router-context'
+import type { ChildSegmentMap } from '../../shared/lib/app-router-context.shared-runtime'
 import type {
   FlightRouterState,
   FlightSegmentPath,
-  ChildProp,
   Segment,
 } from '../../server/app-render/types'
 import type { ErrorComponent } from './error-boundary'
@@ -17,7 +16,7 @@ import {
   LayoutRouterContext,
   GlobalLayoutRouterContext,
   TemplateContext,
-} from '../../shared/lib/app-router-context'
+} from '../../shared/lib/app-router-context.shared-runtime'
 import { fetchServerResponse } from './router-reducer/fetch-server-response'
 import { createInfinitePromise } from './infinite-promise'
 import { ErrorBoundary } from './error-boundary'
@@ -116,9 +115,22 @@ const rectProperties = [
   'y',
 ] as const
 /**
- * Check if a HTMLElement is hidden.
+ * Check if a HTMLElement is hidden or fixed/sticky position
  */
-function elementCanScroll(element: HTMLElement) {
+function shouldSkipElement(element: HTMLElement) {
+  // we ignore fixed or sticky positioned elements since they'll likely pass the "in-viewport" check
+  // and will result in a situation we bail on scroll because of something like a fixed nav,
+  // even though the actual page content is offscreen
+  if (['sticky', 'fixed'].includes(getComputedStyle(element).position)) {
+    if (process.env.NODE_ENV === 'development') {
+      console.warn(
+        'Skipping auto-scroll behavior due to `position: sticky` or `position: fixed` on element:',
+        element
+      )
+    }
+    return true
+  }
+
   // Uses `getBoundingClientRect` to check if the element is hidden instead of `offsetParent`
   // because `offsetParent` doesn't consider document/body
   const rect = element.getBoundingClientRect()
@@ -192,17 +204,15 @@ class InnerScrollAndFocusHandler extends React.Component<ScrollAndFocusHandlerPr
         domNode = findDOMNode(this)
       }
 
-      // TODO-APP: Handle the case where we couldn't select any DOM node, even higher up in the layout-router above the current segmentPath.
       // If there is no DOM node this layout-router level is skipped. It'll be handled higher-up in the tree.
       if (!(domNode instanceof Element)) {
         return
       }
 
-      // Verify if the element is a HTMLElement and if it's visible on screen (e.g. not display: none).
-      // If the element is not a HTMLElement or not visible we try to select the next sibling and try again.
-      while (!(domNode instanceof HTMLElement) || elementCanScroll(domNode)) {
-        // TODO-APP: Handle the case where we couldn't select any DOM node, even higher up in the layout-router above the current segmentPath.
-        // No siblings found that are visible so we handle scroll higher up in the tree instead.
+      // Verify if the element is a HTMLElement and if we want to consider it for scroll behavior.
+      // If the element is skipped, try to select the next sibling and try again.
+      while (!(domNode instanceof HTMLElement) || shouldSkipElement(domNode)) {
+        // No siblings found that match the criteria are found, so handle scroll higher up in the tree instead.
         if (domNode.nextElementSibling === null) {
           return
         }
@@ -247,8 +257,12 @@ class InnerScrollAndFocusHandler extends React.Component<ScrollAndFocusHandlerPr
         {
           // We will force layout by querying domNode position
           dontForceLayout: true,
+          onlyHashChange: focusAndScrollRef.onlyHashChange,
         }
       )
+
+      // Mutate after scrolling so that it can be read by `handleSmoothScroll`
+      focusAndScrollRef.onlyHashChange = false
 
       // Set focus on the element
       domNode.focus()
@@ -300,7 +314,6 @@ function InnerLayoutRouter({
   parallelRouterKey,
   url,
   childNodes,
-  childProp,
   segmentPath,
   tree,
   // TODO-APP: implement `<Offscreen>` when available.
@@ -310,7 +323,6 @@ function InnerLayoutRouter({
   parallelRouterKey: string
   url: string
   childNodes: ChildSegmentMap
-  childProp: ChildProp | null
   segmentPath: FlightSegmentPath
   tree: FlightRouterState
   isActive: boolean
@@ -325,33 +337,6 @@ function InnerLayoutRouter({
 
   // Read segment path from the parallel router cache node.
   let childNode = childNodes.get(cacheKey)
-
-  // If childProp is available this means it's the Flight / SSR case.
-  if (
-    childProp &&
-    // TODO-APP: verify if this can be null based on user code
-    childProp.current !== null
-  ) {
-    if (!childNode) {
-      // Add the segment's subTreeData to the cache.
-      // This writes to the cache when there is no item in the cache yet. It never *overwrites* existing cache items which is why it's safe in concurrent mode.
-      childNode = {
-        status: CacheStates.READY,
-        data: null,
-        subTreeData: childProp.current,
-        parallelRoutes: new Map(),
-      }
-
-      childNodes.set(cacheKey, childNode)
-    } else {
-      if (childNode.status === CacheStates.LAZY_INITIALIZED) {
-        // @ts-expect-error we're changing it's type!
-        childNode.status = CacheStates.READY
-        // @ts-expect-error
-        childNode.subTreeData = childProp.current
-      }
-    }
-  }
 
   // When childNode is not available during rendering client-side we need to fetch it from the server.
   if (!childNode || childNode.status === CacheStates.LAZY_INITIALIZED) {
@@ -448,11 +433,13 @@ function LoadingBoundary({
   children,
   loading,
   loadingStyles,
+  loadingScripts,
   hasLoading,
 }: {
   children: React.ReactNode
   loading?: React.ReactNode
   loadingStyles?: React.ReactNode
+  loadingScripts?: React.ReactNode
   hasLoading: boolean
 }): JSX.Element {
   if (hasLoading) {
@@ -461,6 +448,7 @@ function LoadingBoundary({
         fallback={
           <>
             {loadingStyles}
+            {loadingScripts}
             {loading}
           </>
         }
@@ -480,32 +468,34 @@ function LoadingBoundary({
 export default function OuterLayoutRouter({
   parallelRouterKey,
   segmentPath,
-  childProp,
   error,
   errorStyles,
+  errorScripts,
   templateStyles,
+  templateScripts,
   loading,
   loadingStyles,
+  loadingScripts,
   hasLoading,
   template,
   notFound,
   notFoundStyles,
-  asNotFound,
   styles,
 }: {
   parallelRouterKey: string
   segmentPath: FlightSegmentPath
-  childProp: ChildProp
   error: ErrorComponent
   errorStyles: React.ReactNode | undefined
+  errorScripts: React.ReactNode | undefined
   templateStyles: React.ReactNode | undefined
+  templateScripts: React.ReactNode | undefined
   template: React.ReactNode
   loading: React.ReactNode | undefined
   loadingStyles: React.ReactNode | undefined
+  loadingScripts: React.ReactNode | undefined
   hasLoading: boolean
   notFound: React.ReactNode | undefined
   notFoundStyles: React.ReactNode | undefined
-  asNotFound?: boolean
   styles?: React.ReactNode
 }) {
   const context = useContext(LayoutRouterContext)
@@ -528,8 +518,6 @@ export default function OuterLayoutRouter({
   // The reason arrays are used in the data format is that these are transferred from the server to the browser so it's optimized to save bytes.
   const treeSegment = tree[1][parallelRouterKey][0]
 
-  const childPropSegment = childProp.segment
-
   // If segment is an array it's a dynamic route and we want to read the dynamic route value as the segment to get from the cache.
   const currentChildSegmentValue = getSegmentValue(treeSegment)
 
@@ -543,10 +531,6 @@ export default function OuterLayoutRouter({
     <>
       {styles}
       {preservedSegments.map((preservedSegment) => {
-        const isChildPropSegment = matchSegment(
-          preservedSegment,
-          childPropSegment
-        )
         const preservedSegmentValue = getSegmentValue(preservedSegment)
         const cacheKey = createRouterCacheKey(preservedSegment)
 
@@ -564,16 +548,20 @@ export default function OuterLayoutRouter({
             key={createRouterCacheKey(preservedSegment, true)}
             value={
               <ScrollAndFocusHandler segmentPath={segmentPath}>
-                <ErrorBoundary errorComponent={error} errorStyles={errorStyles}>
+                <ErrorBoundary
+                  errorComponent={error}
+                  errorStyles={errorStyles}
+                  errorScripts={errorScripts}
+                >
                   <LoadingBoundary
                     hasLoading={hasLoading}
                     loading={loading}
                     loadingStyles={loadingStyles}
+                    loadingScripts={loadingScripts}
                   >
                     <NotFoundBoundary
                       notFound={notFound}
                       notFoundStyles={notFoundStyles}
-                      asNotFound={asNotFound}
                     >
                       <RedirectBoundary>
                         <InnerLayoutRouter
@@ -581,7 +569,6 @@ export default function OuterLayoutRouter({
                           url={url}
                           tree={tree}
                           childNodes={childNodesForParallelRouter!}
-                          childProp={isChildPropSegment ? childProp : null}
                           segmentPath={segmentPath}
                           cacheKey={cacheKey}
                           isActive={
@@ -596,6 +583,7 @@ export default function OuterLayoutRouter({
             }
           >
             {templateStyles}
+            {templateScripts}
             {template}
           </TemplateContext.Provider>
         )

@@ -13,28 +13,31 @@ createNextDescribe(
         )
 
         expect(functionsConfigManifest).toMatchInlineSnapshot(`
-          Object {
-            "/api/page-route": Object {
-              "maxDuration": 1,
+          {
+            "functions": {
+              "/api/page-route": {
+                "maxDuration": 1,
+              },
+              "/app-route": {
+                "maxDuration": 1,
+              },
+              "/app-route-edge": {
+                "maxDuration": 2,
+              },
+              "/app-ssr": {
+                "maxDuration": 3,
+              },
+              "/app-ssr-edge": {
+                "maxDuration": 4,
+              },
+              "/page": {
+                "maxDuration": 2,
+              },
+              "/page-ssr": {
+                "maxDuration": 3,
+              },
             },
-            "/app-route": Object {
-              "maxDuration": 1,
-            },
-            "/app-route-edge": Object {
-              "maxDuration": 2,
-            },
-            "/app-ssr": Object {
-              "maxDuration": 3,
-            },
-            "/app-ssr-edge": Object {
-              "maxDuration": 4,
-            },
-            "/page": Object {
-              "maxDuration": 2,
-            },
-            "/page-ssr": Object {
-              "maxDuration": 3,
-            },
+            "version": 1,
           }
         `)
       }

@@ -1,5 +1,6 @@
 import type { NextMiddleware, RequestData, FetchEventResult } from './types'
 import type { RequestInit } from './spec-extension/request'
+import type { PrerenderManifest } from '../../build'
 import { PageSignatureError } from './error'
 import { fromNodeOutgoingHttpHeaders } from './utils'
 import { NextFetchEvent } from './spec-extension/fetch-event'
@@ -9,18 +10,18 @@ import { relativizeURL } from '../../shared/lib/router/utils/relativize-url'
 import { waitUntilSymbol } from './spec-extension/fetch-event'
 import { NextURL } from './next-url'
 import { stripInternalSearchParams } from '../internal-utils'
-import { normalizeRscPath } from '../../shared/lib/router/utils/app-paths'
-import {
-  FETCH_CACHE_HEADER,
-  NEXT_ROUTER_PREFETCH,
-  NEXT_ROUTER_STATE_TREE,
-  RSC,
-} from '../../client/components/app-router-headers'
+import { normalizeRscURL } from '../../shared/lib/router/utils/app-paths'
+import { FLIGHT_PARAMETERS } from '../../client/components/app-router-headers'
 import { NEXT_QUERY_PARAM_PREFIX } from '../../lib/constants'
 import { ensureInstrumentationRegistered } from './globals'
+import { RequestAsyncStorageWrapper } from '../async-storage/request-async-storage-wrapper'
+import { requestAsyncStorage } from '../../client/components/request-async-storage.external'
+import { getTracer } from '../lib/trace/tracer'
+import type { TextMapGetter } from 'next/dist/compiled/@opentelemetry/api'
 
 class NextRequestHint extends NextRequest {
   sourcePage: string
+  fetchMetrics?: FetchEventResult['fetchMetrics']
 
   constructor(params: {
     init: RequestInit
@@ -44,12 +45,10 @@ class NextRequestHint extends NextRequest {
   }
 }
 
-const FLIGHT_PARAMETERS = [
-  [RSC],
-  [NEXT_ROUTER_STATE_TREE],
-  [NEXT_ROUTER_PREFETCH],
-  [FETCH_CACHE_HEADER],
-] as const
+const headersGetter: TextMapGetter<Headers> = {
+  keys: (headers) => Array.from(headers.keys()),
+  get: (headers, key) => headers.get(key) ?? undefined,
+}
 
 export type AdapterOptions = {
   handler: NextMiddleware
@@ -58,15 +57,44 @@ export type AdapterOptions = {
   IncrementalCache?: typeof import('../lib/incremental-cache').IncrementalCache
 }
 
+let propagator: <T>(request: NextRequestHint, fn: () => T) => T = (
+  request,
+  fn
+) => {
+  const tracer = getTracer()
+  return tracer.withPropagatedContext(request.headers, fn, headersGetter)
+}
+
+let testApisIntercepted = false
+
+function ensureTestApisIntercepted() {
+  if (!testApisIntercepted) {
+    testApisIntercepted = true
+    if (process.env.NEXT_PRIVATE_TEST_PROXY === 'true') {
+      const {
+        interceptTestApis,
+        wrapRequestHandler,
+      } = require('next/dist/experimental/testmode/server-edge')
+      interceptTestApis()
+      propagator = wrapRequestHandler(propagator)
+    }
+  }
+}
+
 export async function adapter(
   params: AdapterOptions
 ): Promise<FetchEventResult> {
+  ensureTestApisIntercepted()
   await ensureInstrumentationRegistered()
 
   // TODO-APP: use explicit marker for this
   const isEdgeRendering = typeof self.__BUILD_MANIFEST !== 'undefined'
+  const prerenderManifest: PrerenderManifest | undefined =
+    typeof self.__PRERENDER_MANIFEST === 'string'
+      ? JSON.parse(self.__PRERENDER_MANIFEST)
+      : undefined
 
-  params.request.url = normalizeRscPath(params.request.url, true)
+  params.request.url = normalizeRscURL(params.request.url)
 
   const requestUrl = new NextURL(params.request.url, {
     headers: params.request.headers,
@@ -177,11 +205,43 @@ export async function adapter(
   }
 
   const event = new NextFetchEvent({ request, page: params.page })
-  let response = await params.handler(request, event)
+  let response
+  let cookiesFromResponse
+
+  response = await propagator(request, () => {
+    // we only care to make async storage available for middleware
+    const isMiddleware =
+      params.page === '/middleware' || params.page === '/src/middleware'
+    if (isMiddleware) {
+      return RequestAsyncStorageWrapper.wrap(
+        requestAsyncStorage,
+        {
+          req: request,
+          renderOpts: {
+            onUpdateCookies: (cookies) => {
+              cookiesFromResponse = cookies
+            },
+            // @ts-expect-error: TODO: investigate why previewProps isn't on RenderOpts
+            previewProps: prerenderManifest?.preview || {
+              previewModeId: 'development-id',
+              previewModeEncryptionKey: '',
+              previewModeSigningKey: '',
+            },
+          },
+        },
+        () => params.handler(request, event)
+      )
+    }
+    return params.handler(request, event)
+  })
 
   // check if response is a Response object
   if (response && !(response instanceof Response)) {
     throw new TypeError('Expected an instance of Response to be returned')
+  }
+
+  if (response && cookiesFromResponse) {
+    response.headers.set('set-cookie', cookiesFromResponse)
   }
 
   /**
@@ -293,5 +353,6 @@ export async function adapter(
   return {
     response: finalResponse,
     waitUntil: Promise.all(event[waitUntilSymbol]),
+    fetchMetrics: request.fetchMetrics,
   }
 }

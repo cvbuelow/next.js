@@ -1,5 +1,5 @@
 import { createNextDescribe } from 'e2e-utils'
-import { check } from 'next-test-utils'
+import { check, waitFor } from 'next-test-utils'
 import type { Request } from 'playwright-chromium'
 
 createNextDescribe(
@@ -53,6 +53,65 @@ createNextDescribe(
             ? 'success'
             : JSON.stringify(requests)
         }, 'success')
+      })
+
+      it('should not reset shallow url updates on prefetch', async () => {
+        const browser = await next.browser('/search-params/shallow')
+        const button = await browser.elementByCss('button')
+        await button.click()
+        expect(await browser.url()).toMatch(/\?foo=bar$/)
+        const link = await browser.elementByCss('a')
+        await link.hover()
+        // Hovering a prefetch link should keep the URL intact
+        expect(await browser.url()).toMatch(/\?foo=bar$/)
+      })
+
+      describe('useParams identity between renders', () => {
+        async function runTests(page: string) {
+          const browser = await next.browser(page)
+
+          await check(
+            async () => JSON.stringify(await browser.log()),
+            /params changed/
+          )
+
+          let outputIndex = (await browser.log()).length
+
+          await browser.elementById('rerender-button').click()
+          await browser.elementById('rerender-button').click()
+          await browser.elementById('rerender-button').click()
+
+          await check(async () => {
+            return browser.elementById('rerender-button').text()
+          }, 'Re-Render 3')
+
+          await check(async () => {
+            const logs = await browser.log()
+            return JSON.stringify(logs.slice(outputIndex)).includes(
+              'params changed'
+            )
+              ? 'fail'
+              : 'success'
+          }, 'success')
+
+          outputIndex = (await browser.log()).length
+
+          await browser.elementById('change-params-button').click()
+
+          await check(
+            async () =>
+              JSON.stringify((await browser.log()).slice(outputIndex)),
+            /params changed/
+          )
+        }
+
+        it('should be stable in app', async () => {
+          await runTests('/search-params/foo')
+        })
+
+        it('should be stable in pages', async () => {
+          await runTests('/search-params-pages/foo')
+        })
       })
     })
 
@@ -421,6 +480,12 @@ createNextDescribe(
           })
           expect(res.status).toBe(307)
         })
+        it('should respond with 308 status code if permanent flag is set', async () => {
+          const res = await next.fetch('/redirect/servercomponent-2', {
+            redirect: 'manual',
+          })
+          expect(res.status).toBe(308)
+        })
       })
     })
 
@@ -491,6 +556,42 @@ createNextDescribe(
           .waitForElementByCss('#link-to-app')
         expect(await browser.url()).toBe(next.url + '/some')
       })
+
+      it('should not omit the hash while navigating from app to pages', async () => {
+        const browser = await next.browser('/hash-link-to-pages-router')
+        await browser
+          .elementByCss('#link-to-pages-router')
+          .click()
+          .waitForElementByCss('#link-to-app')
+        await check(() => browser.url(), next.url + '/some#non-existent')
+      })
+
+      if (!isNextDev) {
+        // this test is pretty hard to test in playwright, so most of the heavy lifting is in the page component itself
+        // it triggers a hover on a link to initiate a prefetch request every second, and so we check that
+        // it doesn't repeatedly initiate the mpa navigation request
+        it('should not continously initiate a mpa navigation to the same URL when router state changes', async () => {
+          let requestCount = 0
+          const browser = await next.browser('/mpa-nav-test', {
+            beforePageLoad(page) {
+              page.on('request', (request) => {
+                const url = new URL(request.url())
+                // skip rsc prefetches
+                if (url.pathname === '/slow-page' && !url.search) {
+                  requestCount++
+                }
+              })
+            },
+          })
+
+          await browser.waitForElementByCss('#link-to-slow-page')
+
+          // wait a few seconds since prefetches are triggered in 1s intervals in the page component
+          await waitFor(5000)
+
+          expect(requestCount).toBe(1)
+        })
+      }
     })
 
     describe('nested navigation', () => {
@@ -528,6 +629,19 @@ createNextDescribe(
           }
         }
       })
+
+      it('should load chunks correctly without double encoding of url', async () => {
+        const browser = await next.browser('/router')
+
+        await browser
+          .elementByCss('#dynamic-link')
+          .click()
+          .waitForElementByCss('#dynamic-gsp-content')
+
+        expect(await browser.elementByCss('#dynamic-gsp-content').text()).toBe(
+          'slug:1'
+        )
+      })
     })
 
     describe('SEO', () => {
@@ -535,15 +649,29 @@ createNextDescribe(
         const noIndexTag = '<meta name="robots" content="noindex"/>'
         const defaultViewportTag =
           '<meta name="viewport" content="width=device-width, initial-scale=1"/>'
+        const devErrorMetadataTag =
+          '<meta name="next-error" content="not-found"/>'
         const html = await next.render('/not-found/suspense')
+
         expect(html).toContain(noIndexTag)
         // only contain once
         expect(html.split(noIndexTag).length).toBe(2)
         expect(html.split(defaultViewportTag).length).toBe(2)
+        if (isNextDev) {
+          // only contain dev error tag once
+          expect(html.split(devErrorMetadataTag).length).toBe(2)
+        }
       })
 
       it('should emit refresh meta tag for redirect page when streaming', async () => {
         const html = await next.render('/redirect/suspense')
+        expect(html).toContain(
+          '<meta http-equiv="refresh" content="1;url=/redirect/result"/>'
+        )
+      })
+
+      it('should emit refresh meta tag (permanent) for redirect page when streaming', async () => {
+        const html = await next.render('/redirect/suspense-2')
         expect(html).toContain(
           '<meta http-equiv="refresh" content="0;url=/redirect/result"/>'
         )
@@ -562,6 +690,75 @@ createNextDescribe(
         expect(next.cliOutput).not.toInclude(
           'PageNotFoundError: Cannot find module for page'
         )
+      })
+    })
+
+    describe('navigations when attaching a Proxy to `window.Promise`', () => {
+      it('should navigate without issue', async () => {
+        const browser = await next.browser('/nested-navigation')
+        await browser.eval(`window.Promise = new Proxy(window.Promise, {})`)
+
+        expect(await browser.elementByCss('h1').text()).toBe('Home')
+
+        const pages = [
+          ['Electronics', ['Phones', 'Tablets', 'Laptops']],
+          ['Clothing', ['Tops', 'Shorts', 'Shoes']],
+          ['Books', ['Fiction', 'Biography', 'Education']],
+          ['Shoes', []],
+        ] as const
+
+        for (const [category, subCategories] of pages) {
+          expect(
+            await browser
+              .elementByCss(
+                `a[href="/nested-navigation/${category.toLowerCase()}"]`
+              )
+              .click()
+              .waitForElementByCss(`#all-${category.toLowerCase()}`)
+              .text()
+          ).toBe(`All ${category}`)
+
+          for (const subcategory of subCategories) {
+            expect(
+              await browser
+                .elementByCss(
+                  `a[href="/nested-navigation/${category.toLowerCase()}/${subcategory.toLowerCase()}"]`
+                )
+                .click()
+                .waitForElementByCss(`#${subcategory.toLowerCase()}`)
+                .text()
+            ).toBe(`${subcategory}`)
+          }
+        }
+      })
+    })
+
+    describe('scroll restoration', () => {
+      it('should restore original scroll position when navigating back', async () => {
+        const browser = await next.browser('/scroll-restoration', {
+          // throttling the CPU to rule out flakiness based on how quickly the page loads
+          cpuThrottleRate: 6,
+        })
+        const body = await browser.elementByCss('body')
+        expect(await body.text()).toContain('Item 50')
+        await browser.elementById('load-more').click()
+        await browser.elementById('load-more').click()
+        await browser.elementById('load-more').click()
+        expect(await body.text()).toContain('Item 200')
+
+        // scroll to the bottom of the page
+        await browser.eval('window.scrollTo(0, document.body.scrollHeight)')
+
+        // grab the current position
+        const scrollPosition = await browser.eval('window.pageYOffset')
+
+        await browser.elementByCss("[href='/scroll-restoration/other']").click()
+        await browser.elementById('back-button').click()
+
+        const newScrollPosition = await browser.eval('window.pageYOffset')
+
+        // confirm that the scroll position was restored
+        await check(() => scrollPosition === newScrollPosition, true)
       })
     })
   }

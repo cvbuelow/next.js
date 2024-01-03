@@ -216,12 +216,12 @@ impl VisitMut for CjsOptimizer {
         {
             if let Expr::Ident(ident) = &**callee {
                 if ident.span.ctxt == self.unresolved_ctxt && ident.sym == *"require" {
-                    if let Some(arg) = args.get(0) {
+                    if let Some(arg) = args.first() {
                         if let Expr::Lit(Lit::Str(v)) = &*arg.expr {
                             // TODO: Config
 
                             if let Pat::Ident(name) = &n.name {
-                                if let Some(..) = self.should_rewrite(&v.value) {
+                                if self.should_rewrite(&v.value).is_some() {
                                     let key = name.to_id();
 
                                     if !self.data.is_prepass {
@@ -233,7 +233,7 @@ impl VisitMut for CjsOptimizer {
                                         self.data.imports.insert(
                                             key,
                                             ImportRecord {
-                                                module_specifier: v.value.clone().into(),
+                                                module_specifier: v.value.clone(),
                                             },
                                         );
                                     }

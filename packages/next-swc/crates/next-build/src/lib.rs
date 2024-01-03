@@ -1,10 +1,13 @@
+#![feature(type_alias_impl_trait)]
+#![feature(arbitrary_self_types)]
+
 use turbopack_binding::turbo::{
     tasks::{run_once, TransientInstance, TurboTasks},
     tasks_memory::MemoryBackend,
 };
 
 pub mod build_options;
-pub mod manifests;
+pub(crate) mod next_app;
 pub(crate) mod next_build;
 pub(crate) mod next_pages;
 

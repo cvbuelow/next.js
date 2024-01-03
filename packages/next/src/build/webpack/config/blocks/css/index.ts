@@ -1,7 +1,8 @@
 import curry from 'next/dist/compiled/lodash.curry'
-import { webpack } from 'next/dist/compiled/webpack/webpack'
+import type { webpack } from 'next/dist/compiled/webpack/webpack'
 import { loader, plugin } from '../../helpers'
-import { ConfigurationContext, ConfigurationFn, pipe } from '../../utils'
+import { pipe } from '../../utils'
+import type { ConfigurationContext, ConfigurationFn } from '../../utils'
 import { getCssModuleLoader, getGlobalCssLoader } from './loaders'
 import { getNextFontLoader } from './loaders/next-font'
 import {
@@ -26,11 +27,19 @@ const regexSassGlobal = /(?<!\.module)\.(scss|sass)$/
 const regexSassModules = /\.module\.(scss|sass)$/
 
 const APP_LAYER_RULE = {
-  or: [WEBPACK_LAYERS.server, WEBPACK_LAYERS.client, WEBPACK_LAYERS.appClient],
+  or: [
+    WEBPACK_LAYERS.reactServerComponents,
+    WEBPACK_LAYERS.serverSideRendering,
+    WEBPACK_LAYERS.appPagesBrowser,
+  ],
 }
 
 const PAGES_LAYER_RULE = {
-  not: [WEBPACK_LAYERS.server, WEBPACK_LAYERS.client, WEBPACK_LAYERS.appClient],
+  not: [
+    WEBPACK_LAYERS.reactServerComponents,
+    WEBPACK_LAYERS.serverSideRendering,
+    WEBPACK_LAYERS.appPagesBrowser,
+  ],
 }
 
 /**

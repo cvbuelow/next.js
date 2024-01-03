@@ -1,18 +1,16 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use swc_core::ecma::{ast::Program, atoms::JsWord, visit::VisitMutWith};
+use turbo_tasks::Vc;
 use turbopack_binding::turbopack::{
-    ecmascript::{
-        CustomTransformer, EcmascriptInputTransform, EcmascriptInputTransformsVc, TransformContext,
-        TransformPluginVc,
-    },
+    ecmascript::{CustomTransformer, EcmascriptInputTransform, TransformContext},
     turbopack::module_options::{ModuleRule, ModuleRuleEffect},
 };
 
 use super::module_rule_match_js_no_url;
 
 /// Returns a rule which applies the Next.js font transform.
-pub fn get_next_font_transform_rule() -> ModuleRule {
+pub fn get_next_font_transform_rule(enable_mdx_rs: bool) -> ModuleRule {
     let font_loaders = vec![
         "next/font/google".into(),
         "@next/font/google".into(),
@@ -21,13 +19,13 @@ pub fn get_next_font_transform_rule() -> ModuleRule {
     ];
 
     let transformer =
-        EcmascriptInputTransform::Plugin(TransformPluginVc::cell(box NextJsFont { font_loaders }));
+        EcmascriptInputTransform::Plugin(Vc::cell(Box::new(NextJsFont { font_loaders }) as _));
     ModuleRule::new(
         // TODO: Only match in pages (not pages/api), app/, etc.
-        module_rule_match_js_no_url(),
-        vec![ModuleRuleEffect::AddEcmascriptTransforms(
-            EcmascriptInputTransformsVc::cell(vec![transformer]),
-        )],
+        module_rule_match_js_no_url(enable_mdx_rs),
+        vec![ModuleRuleEffect::AddEcmascriptTransforms(Vc::cell(vec![
+            transformer,
+        ]))],
     )
 }
 
