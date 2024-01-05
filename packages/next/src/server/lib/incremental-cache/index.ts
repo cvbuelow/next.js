@@ -554,7 +554,7 @@ export class IncrementalCache implements IncrementalCacheType {
       })
     }
 
-    if ((this.dev && !ctx.fetchCache) || data?.pageData?.pageProps?.forbidden) return
+    if (this.dev && !ctx.fetchCache) return
     // fetchCache has upper limit of 2MB per-entry currently
     if (ctx.fetchCache && JSON.stringify(data).length > 2 * 1024 * 1024) {
       if (this.dev) {

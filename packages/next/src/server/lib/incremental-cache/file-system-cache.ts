@@ -362,34 +362,42 @@ export default class FileSystemCache implements CacheHandler {
         `${key}.html`,
         isAppPath ? 'app' : 'pages'
       )
-      await this.fs.mkdir(path.dirname(htmlPath))
-      await this.fs.writeFile(htmlPath, data.html)
 
-      await this.fs.writeFile(
-        this.getFilePath(
-          `${key}${
-            isAppPath
-              ? this.experimental.ppr
-                ? RSC_PREFETCH_SUFFIX
-                : RSC_SUFFIX
-              : NEXT_DATA_SUFFIX
-          }`,
-          isAppPath ? 'app' : 'pages'
-        ),
-        isAppPath ? data.pageData : JSON.stringify(data.pageData)
-      )
-
-      if (data.headers || data.status) {
-        const meta: RouteMetadata = {
-          headers: data.headers,
-          status: data.status,
-          postponed: data.postponed,
+      // Delete existing data if page now has restricted access
+      if (!isAppPath && data.pageData?.pageProps?.forbidden) {
+        if (this.fs.existsSync(htmlPath)) {
+          await this.fs.unlink(htmlPath)
         }
+      } else {
+        await this.fs.mkdir(path.dirname(htmlPath))
+        await this.fs.writeFile(htmlPath, data.html)
 
         await this.fs.writeFile(
-          htmlPath.replace(/\.html$/, NEXT_META_SUFFIX),
-          JSON.stringify(meta)
+          this.getFilePath(
+            `${key}${
+              isAppPath
+                ? this.experimental.ppr
+                  ? RSC_PREFETCH_SUFFIX
+                  : RSC_SUFFIX
+                : NEXT_DATA_SUFFIX
+            }`,
+            isAppPath ? 'app' : 'pages'
+          ),
+          isAppPath ? data.pageData : JSON.stringify(data.pageData)
         )
+
+        if (data.headers || data.status) {
+          const meta: RouteMetadata = {
+            headers: data.headers,
+            status: data.status,
+            postponed: data.postponed,
+          }
+
+          await this.fs.writeFile(
+            htmlPath.replace(/\.html$/, NEXT_META_SUFFIX),
+            JSON.stringify(meta)
+          )
+        }
       }
     } else if (data?.kind === 'FETCH') {
       const filePath = this.getFilePath(key, 'fetch')
