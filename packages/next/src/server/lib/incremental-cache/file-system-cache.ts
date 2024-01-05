@@ -344,6 +344,18 @@ export default class FileSystemCache implements CacheHandler {
       return
     }
 
+    if (data?.kind === 'REDIRECT') {
+      // Delete existing data if it exists.
+      const isAppPath = typeof data.pageData === 'string'
+      const htmlPath = this.getFilePath(
+        `${key}.html`,
+        isAppPath ? 'app' : 'pages'
+      )
+      if (this.fs.existsSync(htmlPath)) {
+        await this.fs.unlink(htmlPath)
+      }
+    }
+
     if (data?.kind === 'PAGE') {
       const isAppPath = typeof data.pageData === 'string'
       const htmlPath = this.getFilePath(

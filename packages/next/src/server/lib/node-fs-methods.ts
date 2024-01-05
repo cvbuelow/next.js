@@ -4,6 +4,7 @@ import fs from 'fs'
 
 export const nodeFs: CacheFs = {
   existsSync: fs.existsSync,
+  unlink: fs.promises.unlink,
   readFile: fs.promises.readFile,
   readFileSync: fs.readFileSync,
   writeFile: (f, d) => fs.promises.writeFile(f, d),
