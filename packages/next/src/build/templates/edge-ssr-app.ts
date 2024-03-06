@@ -10,6 +10,9 @@ import type { DocumentType } from '../../shared/lib/utils'
 import type { BuildManifest } from '../../server/get-page-files'
 import type { RequestData } from '../../server/web/types'
 import type { NextConfigComplete } from '../../server/config-shared'
+import { PAGE_TYPES } from '../../lib/page-types'
+import { setReferenceManifestsSingleton } from '../../server/app-render/action-encryption-utils'
+import { createServerModuleMap } from '../../server/app-render/action-utils'
 
 declare const incrementalCacheHandler: any
 // OPTIONAL_IMPORT:incrementalCacheHandler
@@ -43,8 +46,19 @@ const subresourceIntegrityManifest = sriEnabled
   : undefined
 const nextFontManifest = maybeJSONParse(self.__NEXT_FONT_MANIFEST)
 
+if (rscManifest && rscServerManifest) {
+  setReferenceManifestsSingleton({
+    clientReferenceManifest: rscManifest,
+    serverActionsManifest: rscServerManifest,
+    serverModuleMap: createServerModuleMap({
+      serverActionsManifest: rscServerManifest,
+      pageName: 'VAR_PAGE',
+    }),
+  })
+}
+
 const render = getRender({
-  pagesType: 'app',
+  pagesType: PAGE_TYPES.APP,
   dev,
   page: 'VAR_PAGE',
   appMod,
