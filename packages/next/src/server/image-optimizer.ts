@@ -626,7 +626,7 @@ export async function imageOptimizer(
   imageUpstream: ImageUpstream,
   paramsResult: Pick<
     ImageParamsResult,
-    'href' | 'width' | 'quality' | 'mimeType'
+    'href' | 'width' | 'quality' | 'mimeType' | 'bgColor'
   >,
   nextConfig: {
     output: NextConfigComplete['output']
@@ -637,7 +637,7 @@ export async function imageOptimizer(
   },
   isDev: boolean | undefined
 ): Promise<{ buffer: Buffer; contentType: string; maxAge: number }> {
-  const { href, quality, width, mimeType } = paramsResult
+  const { href, quality, width, mimeType, bgColor } = paramsResult
   const upstreamBuffer = imageUpstream.buffer
   const maxAge = getMaxAge(imageUpstream.cacheControl)
   const upstreamType =
