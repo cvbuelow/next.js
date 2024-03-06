@@ -224,6 +224,7 @@ type BaseRenderOpts = {
   poweredByHeader: boolean
   buildId: string
   generateEtags: boolean
+  trailingSlash: boolean
   runtimeConfig?: { [key: string]: any }
   assetPrefix?: string
   canonicalBase: string
@@ -263,7 +264,7 @@ type BaseRenderOpts = {
   appDirDevErrorLogger?: (err: any) => Promise<void>
   strictNextHead: boolean
   isExperimentalCompile?: boolean
-  experimental: { ppr: boolean }
+  experimental: { ppr: boolean; missingSuspenseWithCSRBailout: boolean }
 }
 
 export interface BaseRequestHandler {
@@ -394,7 +395,7 @@ export default abstract class Server<ServerOptions extends Options = Options> {
   protected abstract getIncrementalCache(options: {
     requestHeaders: Record<string, undefined | string | string[]>
     requestProtocol: 'http' | 'https'
-  }): import('./lib/incremental-cache').IncrementalCache
+  }): Promise<import('./lib/incremental-cache').IncrementalCache>
 
   protected abstract getResponseCache(options: {
     dev: boolean
@@ -513,6 +514,7 @@ export default abstract class Server<ServerOptions extends Options = Options> {
     }
 
     this.renderOpts = {
+      trailingSlash: this.nextConfig.trailingSlash,
       deploymentId: this.nextConfig.experimental.deploymentId,
       strictNextHead: !!this.nextConfig.experimental.strictNextHead,
       poweredByHeader: this.nextConfig.poweredByHeader,
@@ -555,6 +557,8 @@ export default abstract class Server<ServerOptions extends Options = Options> {
         ppr:
           this.enabledDirectories.app &&
           this.nextConfig.experimental.ppr === true,
+        missingSuspenseWithCSRBailout:
+          this.nextConfig.experimental.missingSuspenseWithCSRBailout === true,
       },
     }
 
@@ -1273,12 +1277,13 @@ export default abstract class Server<ServerOptions extends Options = Options> {
           protocol = parsedFullUrl.protocol as 'https:' | 'http:'
         } catch {}
 
-        const incrementalCache = this.getIncrementalCache({
+        const incrementalCache = await this.getIncrementalCache({
           requestHeaders: Object.assign({}, req.headers),
           requestProtocol: protocol.substring(0, protocol.length - 1) as
             | 'http'
             | 'https',
         })
+        incrementalCache.resetRequestCache()
         addRequestMeta(req, 'incrementalCache', incrementalCache)
         ;(globalThis as any).__incrementalCache = incrementalCache
       }
@@ -1304,7 +1309,7 @@ export default abstract class Server<ServerOptions extends Options = Options> {
           }
 
           res.statusCode = Number(req.headers['x-invoke-status'])
-          let err = null
+          let err: Error | null = null
 
           if (typeof req.headers['x-invoke-error'] === 'string') {
             const invokeError = JSON.parse(
@@ -2138,12 +2143,14 @@ export default abstract class Server<ServerOptions extends Options = Options> {
     // use existing incrementalCache instance if available
     const incrementalCache =
       (globalThis as any).__incrementalCache ||
-      this.getIncrementalCache({
+      (await this.getIncrementalCache({
         requestHeaders: Object.assign({}, req.headers),
         requestProtocol: protocol.substring(0, protocol.length - 1) as
           | 'http'
           | 'https',
-      })
+      }))
+
+    incrementalCache?.resetRequestCache()
 
     const { routeModule } = components
 
@@ -2612,7 +2619,18 @@ export default abstract class Server<ServerOptions extends Options = Options> {
       return null
     }
 
-    if (isSSG && !this.minimalMode) {
+    const didPostpone =
+      cacheEntry.value?.kind === 'PAGE' && !!cacheEntry.value.postponed
+
+    if (
+      isSSG &&
+      !this.minimalMode &&
+      // We don't want to send a cache header for requests that contain dynamic
+      // data. If this is a Dynamic RSC request or wasn't a Prefetch RSC
+      // request, then we should set the cache header.
+      !isDynamicRSCRequest &&
+      (!didPostpone || isPrefetchRSCRequest)
+    ) {
       // set x-nextjs-cache header to match the header
       // we set for the image-optimizer
       res.setHeader(
@@ -2800,17 +2818,16 @@ export default abstract class Server<ServerOptions extends Options = Options> {
         res.statusCode = cachedData.status
       }
 
-      // Mark that the request did postpone if this is a data request or we're
-      // testing. It's used to verify that we're actually serving a postponed
-      // request so we can trust the cache headers.
-      if (
-        cachedData.postponed &&
-        (isRSCRequest || process.env.__NEXT_TEST_MODE)
-      ) {
+      // Mark that the request did postpone if this is a data request.
+      if (cachedData.postponed && isRSCRequest) {
         res.setHeader(NEXT_DID_POSTPONE_HEADER, '1')
       }
 
-      if (isDataReq) {
+      // we don't go through this block when preview mode is true
+      // as preview mode is a dynamic request (bypasses cache) and doesn't
+      // generate both HTML and payloads in the same request so continue to just
+      // return the generated payload
+      if (isDataReq && !isPreviewMode) {
         // If this is a dynamic RSC request, then stream the response.
         if (isDynamicRSCRequest) {
           if (cachedData.pageData) {
@@ -2824,7 +2841,12 @@ export default abstract class Server<ServerOptions extends Options = Options> {
           return {
             type: 'rsc',
             body: cachedData.html,
-            revalidate: cacheEntry.revalidate,
+            // Dynamic RSC responses cannot be cached, even if they're
+            // configured with `force-static` because we have no way of
+            // distinguishing between `force-static` and pages that have no
+            // postponed state.
+            // TODO: distinguish `force-static` from pages with no postponed state (static)
+            revalidate: 0,
           }
         }
 
@@ -2892,7 +2914,10 @@ export default abstract class Server<ServerOptions extends Options = Options> {
       return {
         type: 'html',
         body,
-        revalidate: cacheEntry.revalidate,
+        // We don't want to cache the response if it has postponed data because
+        // the response being sent to the client it's dynamic parts are streamed
+        // to the client on the same request.
+        revalidate: 0,
       }
     } else if (isDataReq) {
       return {
