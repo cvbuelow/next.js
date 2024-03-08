@@ -2722,7 +2722,7 @@ export default abstract class Server<ServerOptions extends Options = Options> {
     }
 
     if (!cachedData) {
-      if (cacheEntry.revalidate) {
+      if (cacheEntry.revalidate && !isDataReq) {
         res.setHeader('Cache-Control', formatRevalidate(cacheEntry.revalidate))
       }
       if (isDataReq) {
