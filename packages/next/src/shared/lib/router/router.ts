@@ -492,7 +492,6 @@ interface FetchNextDataParams {
   isPrefetch: boolean
   isBackground?: boolean
   unstable_skipClientCache?: boolean
-  priority?: 'Low' | 'High'
 }
 
 function tryToParseAsJSON(text: string) {
@@ -513,7 +512,6 @@ function fetchNextData({
   persistCache,
   isBackground,
   unstable_skipClientCache,
-  priority
 }: FetchNextDataParams): Promise<FetchDataOutput> {
   const { href: cacheKey } = new URL(dataHref, window.location.href)
   const getData = (params?: { method?: 'HEAD' | 'GET' }) =>
@@ -524,7 +522,7 @@ function fetchNextData({
         isPrefetch && hasMiddleware ? { 'x-middleware-prefetch': '1' } : {}
       ),
       method: params?.method ?? 'GET',
-      priority
+      priority: isPrefetch ? 'low' : undefined
     })
       .then((response) => {
         if (response.ok && params?.method === 'HEAD') {
@@ -2484,7 +2482,6 @@ export default class Router implements BaseRouter {
                 options.unstable_skipClientCache ||
                 (options.priority &&
                   !!process.env.__NEXT_OPTIMISTIC_CLIENT_CACHE),
-              priority: isPrefetchRoute ? 'Low' : undefined,
             })
               .then(() => false)
               .catch(() => false)
