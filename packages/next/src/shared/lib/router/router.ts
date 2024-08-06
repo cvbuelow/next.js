@@ -465,6 +465,8 @@ function fetchRetry(
     headers: Object.assign({}, options.headers, {
       'x-nextjs-data': '1',
     }),
+    // @ts-expect-error, this is newer fetch argument
+    priority: options.priority
   }).then((response) => {
     return !response.ok && attempts > 1 && response.status >= 500
       ? fetchRetry(url, attempts - 1, options)
@@ -520,6 +522,7 @@ function fetchNextData({
         isPrefetch && hasMiddleware ? { 'x-middleware-prefetch': '1' } : {}
       ),
       method: params?.method ?? 'GET',
+      priority: isPrefetch ? 'low' : undefined
     })
       .then((response) => {
         if (response.ok && params?.method === 'HEAD') {
