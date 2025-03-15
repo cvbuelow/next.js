@@ -352,6 +352,10 @@ export interface ExperimentalConfig {
   urlImports?: NonNullable<webpack.Configuration['experiments']>['buildHttp']
   swcTraceProfiling?: boolean
   forceSwcTransforms?: boolean
+  prefetch?: {
+    exclude?: string[]
+    include?: string[]
+  }
 
   swcPlugins?: Array<[string, Record<string, unknown>]>
   largePageDataBytes?: number

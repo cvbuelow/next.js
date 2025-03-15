@@ -250,6 +250,9 @@ export function getDefineEnv({
       (config.experimental.nextScriptWorkers && !dev) ?? false,
     'process.env.__NEXT_SCROLL_RESTORATION':
       config.experimental.scrollRestoration ?? false,
+    'process.env.__NEXT_PREFETCH': JSON.stringify(
+      config.experimental.prefetch ?? false
+    ),
     ...getImageConfig(config, dev),
     'process.env.__NEXT_ROUTER_BASEPATH': config.basePath,
     'process.env.__NEXT_STRICT_NEXT_HEAD':

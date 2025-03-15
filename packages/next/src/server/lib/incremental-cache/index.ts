@@ -558,7 +558,7 @@ export class IncrementalCache implements IncrementalCacheType {
   ): Promise<void>
   async set(
     pathname: string,
-    data: IncrementalCacheValue | null,
+    data: (IncrementalCacheValue & { pageData?: any }) | null,
     ctx: SetIncrementalFetchCacheContext | SetIncrementalResponseCacheContext
   ): Promise<void> {
     // Even if we otherwise disable caching for testMode or if no fetchCache is

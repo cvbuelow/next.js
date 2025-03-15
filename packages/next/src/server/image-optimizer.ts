@@ -85,6 +85,7 @@ export interface ImageParamsResult {
   mimeType: string
   sizes: number[]
   minimumCacheTTL: number
+  bgColor?: string
 }
 
 interface ImageUpstream {
@@ -222,7 +223,7 @@ export class ImageOptimizerCache {
     const remotePatterns = nextConfig.images?.remotePatterns || []
     const localPatterns = nextConfig.images?.localPatterns
     const qualities = nextConfig.images?.qualities
-    const { url, w, q } = query
+    const { url, w, q, bgColor } = query
     let href: string
 
     if (domains.length > 0) {
@@ -305,6 +306,13 @@ export class ImageOptimizerCache {
       }
     }
 
+    if (Array.isArray(bgColor)) {
+      return {
+        errorMessage:
+          '"bgColor" parameter (background color) cannot be an array',
+      }
+    }
+
     const width = parseInt(w, 10)
 
     if (width <= 0 || isNaN(width)) {
@@ -364,6 +372,7 @@ export class ImageOptimizerCache {
       quality,
       mimeType,
       minimumCacheTTL,
+      bgColor,
     }
   }
 
@@ -372,13 +381,22 @@ export class ImageOptimizerCache {
     width,
     quality,
     mimeType,
+    bgColor,
   }: {
     href: string
     width: number
     quality: number
     mimeType: string
+    bgColor?: string
   }): string {
-    return getHash([CACHE_VERSION, href, width, quality, mimeType])
+    return getHash([
+      CACHE_VERSION,
+      href,
+      width,
+      quality,
+      mimeType,
+      `${bgColor}`,
+    ])
   }
 
   constructor({
@@ -528,10 +546,24 @@ export function getPreviouslyCachedImageOrNull(
   return null
 }
 
+const isRGBString = (rgb: string) => {
+  const [r, g, b] = rgb.split(',').map((c) => parseInt(c, 10))
+  return (
+    r >= 0 &&
+    r <= 255 &&
+    g >= 0 &&
+    g <= 255 &&
+    b >= 0 &&
+    b <= 255 &&
+    rgb.split(',').length === 3
+  )
+}
+
 export async function optimizeImage({
   buffer,
   contentType,
   quality,
+  bgColor,
   width,
   height,
   concurrency,
@@ -542,6 +574,7 @@ export async function optimizeImage({
   buffer: Buffer
   contentType: string
   quality: number
+  bgColor?: string
   width: number
   height?: number
   concurrency?: number | null
@@ -565,6 +598,11 @@ export async function optimizeImage({
     transformer.resize(width, undefined, {
       withoutEnlargement: true,
     })
+  }
+
+  if (typeof bgColor === 'string' && isRGBString(bgColor)) {
+    const [r, g, b] = bgColor.split(',').map((c) => parseInt(c, 10))
+    transformer.flatten({ background: { r, g, b } })
   }
 
   if (contentType === AVIF) {
@@ -665,7 +703,7 @@ export async function imageOptimizer(
   imageUpstream: ImageUpstream,
   paramsResult: Pick<
     ImageParamsResult,
-    'href' | 'width' | 'quality' | 'mimeType'
+    'href' | 'width' | 'quality' | 'mimeType' | 'bgColor'
   >,
   nextConfig: {
     experimental: Pick<
@@ -693,7 +731,7 @@ export async function imageOptimizer(
   upstreamEtag: string
   error?: unknown
 }> {
-  const { href, quality, width, mimeType } = paramsResult
+  const { href, quality, width, mimeType, bgColor } = paramsResult
   const { buffer: upstreamBuffer, etag: upstreamEtag } = imageUpstream
   const maxAge = Math.max(
     nextConfig.images.minimumCacheTTL,
@@ -788,6 +826,7 @@ export async function imageOptimizer(
       buffer: upstreamBuffer,
       contentType,
       quality,
+      bgColor,
       width,
       concurrency: nextConfig.experimental.imgOptConcurrency,
       limitInputPixels: nextConfig.experimental.imgOptMaxInputPixels,
