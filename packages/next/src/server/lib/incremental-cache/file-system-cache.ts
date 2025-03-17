@@ -374,10 +374,9 @@ export default class FileSystemCache implements CacheHandler {
 
     if (data.kind === CachedRouteKind.REDIRECT) {
       // Delete existing data if it exists.
-      const isAppPath = typeof data.pageData === 'string'
       const htmlPath = this.getFilePath(
         `${key}.html`,
-        isAppPath ? IncrementalCacheKind.APP_PAGE : IncrementalCacheKind.PAGES
+        IncrementalCacheKind.PAGES
       )
       if (this.fs.existsSync(htmlPath)) {
         await this.fs.unlink(htmlPath)
@@ -413,6 +412,7 @@ export default class FileSystemCache implements CacheHandler {
       )
 
       // Delete existing data if page now has restricted access
+      // @ts-ignore-next-line
       if (!isAppPath && data.pageData?.pageProps?.forbidden) {
         if (this.fs.existsSync(htmlPath)) {
           await this.fs.unlink(htmlPath)
