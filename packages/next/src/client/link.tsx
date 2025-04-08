@@ -554,7 +554,7 @@ const Link = React.forwardRef<HTMLAnchorElement, LinkPropsReal>(
           child.props.onMouseEnter(e)
         }
 
-        if (!router) {
+        if (!router || !prefetchEnabled) {
           return
         }
 
