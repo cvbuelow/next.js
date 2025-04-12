@@ -360,6 +360,16 @@ export default class FileSystemCache implements CacheHandler {
     // after their containing directory is created.
     const writer = new MultiFileWriter(this.fs)
 
+    if (data.kind === CachedRouteKind.REDIRECT) {
+      // Delete existing data if it exists.
+      const htmlPath = this.getFilePath(
+        `${key}.html`,
+        IncrementalCacheKind.PAGES
+      )
+      if (this.fs.existsSync(htmlPath)) {
+        await this.fs.unlink(htmlPath)
+      }
+    }
     if (data.kind === CachedRouteKind.APP_ROUTE) {
       const filePath = this.getFilePath(
         `${key}.body`,
@@ -389,55 +399,62 @@ export default class FileSystemCache implements CacheHandler {
         isAppPath ? IncrementalCacheKind.APP_PAGE : IncrementalCacheKind.PAGES
       )
 
-      writer.append(htmlPath, data.html)
-
-      // Fallbacks don't generate a data file.
-      if (!ctx.fetchCache && !ctx.isFallback) {
-        writer.append(
-          this.getFilePath(
-            `${key}${
+      // Delete existing data if page now has restricted access
+      // @ts-ignore-next-line
+      if (!isAppPath && data.pageData?.pageProps?.forbidden) {
+        if (this.fs.existsSync(htmlPath)) {
+          await this.fs.unlink(htmlPath)
+        }
+      } else {
+        writer.append(htmlPath, data.html)
+        // Fallbacks don't generate a data file.
+        if (!ctx.fetchCache && !ctx.isFallback) {
+          writer.append(
+            this.getFilePath(
+              `${key}${
+                isAppPath
+                  ? ctx.isRoutePPREnabled
+                    ? RSC_PREFETCH_SUFFIX
+                    : RSC_SUFFIX
+                  : NEXT_DATA_SUFFIX
+              }`,
               isAppPath
-                ? ctx.isRoutePPREnabled
-                  ? RSC_PREFETCH_SUFFIX
-                  : RSC_SUFFIX
-                : NEXT_DATA_SUFFIX
-            }`,
-            isAppPath
-              ? IncrementalCacheKind.APP_PAGE
-              : IncrementalCacheKind.PAGES
-          ),
-          isAppPath ? data.rscData! : JSON.stringify(data.pageData)
-        )
-      }
-
-      if (data?.kind === CachedRouteKind.APP_PAGE) {
-        let segmentPaths: string[] | undefined
-        if (data.segmentData) {
-          segmentPaths = []
-          const segmentsDir = htmlPath.replace(
-            /\.html$/,
-            RSC_SEGMENTS_DIR_SUFFIX
+                ? IncrementalCacheKind.APP_PAGE
+                : IncrementalCacheKind.PAGES
+            ),
+            isAppPath ? data.rscData! : JSON.stringify(data.pageData)
           )
+        }
 
-          for (const [segmentPath, buffer] of data.segmentData) {
-            segmentPaths.push(segmentPath)
-            const segmentDataFilePath =
-              segmentsDir + segmentPath + RSC_SEGMENT_SUFFIX
-            writer.append(segmentDataFilePath, buffer)
+        if (data?.kind === CachedRouteKind.APP_PAGE) {
+          let segmentPaths: string[] | undefined
+          if (data.segmentData) {
+            segmentPaths = []
+            const segmentsDir = htmlPath.replace(
+              /\.html$/,
+              RSC_SEGMENTS_DIR_SUFFIX
+            )
+
+            for (const [segmentPath, buffer] of data.segmentData) {
+              segmentPaths.push(segmentPath)
+              const segmentDataFilePath =
+                segmentsDir + segmentPath + RSC_SEGMENT_SUFFIX
+              writer.append(segmentDataFilePath, buffer)
+            }
           }
-        }
 
-        const meta: RouteMetadata = {
-          headers: data.headers,
-          status: data.status,
-          postponed: data.postponed,
-          segmentPaths,
-        }
+          const meta: RouteMetadata = {
+            headers: data.headers,
+            status: data.status,
+            postponed: data.postponed,
+            segmentPaths,
+          }
 
-        writer.append(
-          htmlPath.replace(/\.html$/, NEXT_META_SUFFIX),
-          JSON.stringify(meta)
-        )
+          writer.append(
+            htmlPath.replace(/\.html$/, NEXT_META_SUFFIX),
+            JSON.stringify(meta)
+          )
+        }
       }
     } else if (data.kind === CachedRouteKind.FETCH) {
       const filePath = this.getFilePath(key, IncrementalCacheKind.FETCH)

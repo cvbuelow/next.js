@@ -178,6 +178,11 @@ import { InvariantError } from '../shared/lib/invariant-error'
 import { decodeQueryPathParameter } from './lib/decode-query-path-parameter'
 import { getCacheHandlers } from './use-cache/handlers'
 
+// Uncomment this when patching nextjs in thangs-next since the nextjs build won't find this file
+// const {
+//   makeResponseHandler,
+// } = require('../../../../src/@utilities/serverResponse')
+
 export type FindComponentsResult = {
   components: LoadComponentsReturnType
   query: NextParsedUrlQuery
@@ -305,6 +310,7 @@ export type RequestContext<
   pathname: string
   query: NextParsedUrlQuery
   renderOpts: RenderOpts
+  pathnameOverride?: string
 }
 
 export class NoFallbackError extends Error {}
@@ -345,6 +351,7 @@ export default abstract class Server<
   protected readonly distDir: string
   protected readonly publicDir: string
   protected readonly hasStaticDir: boolean
+  protected readonly onResponse: (arg: any) => void
   protected readonly pagesManifest?: PagesManifest
   protected readonly appPathsManifest?: PagesManifest
   protected readonly buildId: string
@@ -637,6 +644,9 @@ export default abstract class Server<
 
     this.setAssetPrefix(assetPrefix)
     this.responseCache = this.getResponseCache({ dev })
+    // Uncomment this when patching nextjs in thangs-next
+    // this.onResponse = makeResponseHandler()
+    this.onResponse = () => {}
   }
 
   protected reloadMatchers() {
@@ -1799,6 +1809,7 @@ export default abstract class Server<
       if (cacheControl && cacheControl.expire === undefined) {
         cacheControl.expire = this.nextConfig.expireTime
       }
+      this.onResponse({ ctx, body })
 
       await this.sendRenderResult(req, res, {
         result: body,
@@ -3798,11 +3809,15 @@ export default abstract class Server<
         ) {
           continue
         }
-
+        const pathnameOverride = match.definition.pathname
+        // Pass this up the call stack so it can be used for tracking
+        ctx.pathnameOverride = pathnameOverride
         const result = await this.renderPageComponent(
           {
             ...ctx,
-            pathname: match.definition.pathname,
+            // Use the overridden pathname if available, otherwise use the
+            // original pathname.
+            pathname: pathnameOverride,
             renderOpts: {
               ...ctx.renderOpts,
               params: match.params,
