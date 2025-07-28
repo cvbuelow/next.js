@@ -339,7 +339,7 @@ export class TurbopackManifestLoader {
   private mergeWebpackStats(statsFiles: Iterable<WebpackStats>): WebpackStats {
     const entrypoints: Record<string, StatsChunkGroup> = {}
     const assets: Map<string, StatsAsset> = new Map()
-    const chunks: Map<string, StatsChunk> = new Map()
+    const chunks: Map<string | number, StatsChunk> = new Map()
     const modules: Map<string | number, StatsModule> = new Map()
 
     for (const statsFile of statsFiles) {
@@ -361,8 +361,8 @@ export class TurbopackManifestLoader {
 
       if (statsFile.chunks) {
         for (const chunk of statsFile.chunks) {
-          if (!chunks.has(chunk.name)) {
-            chunks.set(chunk.name, chunk)
+          if (!chunks.has(chunk.id!)) {
+            chunks.set(chunk.id!, chunk)
           }
         }
       }
@@ -388,6 +388,7 @@ export class TurbopackManifestLoader {
     }
 
     return {
+      version: 'Turbopack',
       entrypoints,
       assets: [...assets.values()],
       chunks: [...chunks.values()],
@@ -478,22 +479,29 @@ export class TurbopackManifestLoader {
     }
 
     const sortedPageKeys = getSortedRoutes(pagesKeys)
-    const content: ClientBuildManifest = {
+    const clientBuildManifest: ClientBuildManifest = {
       __rewrites: normalizeRewritesForBuildManifest(rewrites) as any,
       ...Object.fromEntries(
-        sortedPageKeys.map((pathname) => [
-          pathname,
-          [`static/chunks/pages${pathname === '/' ? '/index' : pathname}.js`],
-        ])
+        sortedPageKeys.map((pathname) => {
+          let filePath
+          if (pathname === '/') {
+            filePath = '/index.js'
+          } else if (pathname.endsWith('/index')) {
+            filePath = `${pathname}/index.js`
+          } else {
+            filePath = `${pathname}.js`
+          }
+          return [pathname, [`static/chunks/pages${filePath}`]]
+        })
       ),
       sortedPages: sortedPageKeys,
     }
-    const buildManifestJs = `self.__BUILD_MANIFEST = ${JSON.stringify(
-      content
+    const clientBuildManifestJs = `self.__BUILD_MANIFEST = ${JSON.stringify(
+      clientBuildManifest
     )};self.__BUILD_MANIFEST_CB && self.__BUILD_MANIFEST_CB()`
     await writeFileAtomic(
       join(this.distDir, 'static', this.buildId, '_buildManifest.js'),
-      buildManifestJs
+      clientBuildManifestJs
     )
     await writeFileAtomic(
       join(this.distDir, 'static', this.buildId, '_ssgManifest.js'),

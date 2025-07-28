@@ -1,6 +1,6 @@
 import type { Socket } from 'net'
 import { mkdir, writeFile } from 'fs/promises'
-import { join, extname } from 'path'
+import { join, extname, relative } from 'path'
 import { pathToFileURL } from 'url'
 
 import ws from 'next/dist/compiled/ws'
@@ -34,7 +34,7 @@ import { BLOCKED_PAGES } from '../../shared/lib/constants'
 import {
   getOverlayMiddleware,
   getSourceMapMiddleware,
-} from '../../client/components/react-dev-overlay/server/middleware-turbopack'
+} from './middleware-turbopack'
 import { PageNotFoundError } from '../../shared/lib/utils'
 import { debounce } from '../utils'
 import { deleteCache, deleteFromRequireCache } from './require-cache'
@@ -77,13 +77,11 @@ import { FAST_REFRESH_RUNTIME_RELOAD } from './messages'
 import { generateEncryptionKeyBase64 } from '../app-render/encryption-utils-server'
 import { isAppPageRouteDefinition } from '../route-definitions/app-page-route-definition'
 import { normalizeAppPath } from '../../shared/lib/router/utils/app-paths'
+import type { ModernSourceMapPayload } from '../lib/source-maps'
 import { getNodeDebugType } from '../lib/utils'
 import { isMetadataRouteFile } from '../../lib/metadata/is-metadata-route'
-import {
-  setBundlerFindSourceMapImplementation,
-  type ModernSourceMapPayload,
-} from '../patch-error-inspect'
-import { getNextErrorFeedbackMiddleware } from '../../client/components/react-dev-overlay/server/get-next-error-feedback-middleware'
+import { setBundlerFindSourceMapImplementation } from '../patch-error-inspect'
+import { getNextErrorFeedbackMiddleware } from '../../next-devtools/server/get-next-error-feedback-middleware'
 import {
   formatIssue,
   getTurbopackJsConfig,
@@ -94,10 +92,14 @@ import {
   type EntryIssuesMap,
   type TopLevelIssuesMap,
 } from '../../shared/lib/turbopack/utils'
-import { getDevOverlayFontMiddleware } from '../../client/components/react-dev-overlay/font/get-dev-overlay-font-middleware'
+import { getDevOverlayFontMiddleware } from '../../next-devtools/server/font/get-dev-overlay-font-middleware'
 import { devIndicatorServerState } from './dev-indicator-server-state'
-import { getDisableDevIndicatorMiddleware } from './dev-indicator-middleware'
-// import { getSupportedBrowsers } from '../../build/utils'
+import { getDisableDevIndicatorMiddleware } from '../../next-devtools/server/dev-indicator-middleware'
+import { getRestartDevServerMiddleware } from '../../next-devtools/server/restart-dev-server-middleware'
+import { backgroundLogCompilationEvents } from '../../shared/lib/turbopack/compilation-events'
+import { getSupportedBrowsers } from '../../build/utils'
+import { receiveBrowserLogsTurbopack } from './browser-logs/receive-logs'
+import { normalizePath } from '../../lib/normalize-path'
 
 const wsServer = new ws.Server({ noServer: true })
 const isTestMode = !!(
@@ -154,7 +156,7 @@ function getSourceMapFromTurbopack(
 }
 
 export async function createHotReloaderTurbopack(
-  opts: SetupOpts,
+  opts: SetupOpts & { isSrcDir: boolean },
   serverFields: ServerFields,
   distDir: string,
   resetFetch: () => void
@@ -171,10 +173,13 @@ export async function createHotReloaderTurbopack(
   // For the debugging purpose, check if createNext or equivalent next instance setup in test cases
   // works correctly. Normally `run-test` hides output so only will be visible when `--debug` flag is used.
   if (isTestMode) {
-    require('console').log('Creating turbopack project', {
-      dir: projectPath,
-      testMode: isTestMode,
-    })
+    ;(require('console') as typeof import('console')).log(
+      'Creating turbopack project',
+      {
+        dir: projectPath,
+        testMode: isTestMode,
+      }
+    )
   }
 
   const hasRewrites =
@@ -200,18 +205,17 @@ export async function createHotReloaderTurbopack(
     // TODO this need to be set correctly for persistent caching to work
   }
 
-  // const supportedBrowsers = await getSupportedBrowsers(dir, dev)
-  const supportedBrowsers = [
-    'last 1 Chrome versions, last 1 Firefox versions, last 1 Safari versions, last 1 Edge versions',
-  ]
+  const supportedBrowsers = await getSupportedBrowsers(projectPath, dev)
+  const currentNodeJsVersion = process.versions.node
 
+  const rootPath =
+    opts.nextConfig.turbopack?.root ||
+    opts.nextConfig.outputFileTracingRoot ||
+    projectPath
   const project = await bindings.turbo.createProject(
     {
-      projectPath: projectPath,
-      rootPath:
-        opts.nextConfig.turbopack?.root ||
-        opts.nextConfig.outputFileTracingRoot ||
-        projectPath,
+      rootPath,
+      projectPath: normalizePath(relative(rootPath, projectPath) || '.'),
       distDir,
       nextConfig: opts.nextConfig,
       jsConfig: await getTurbopackJsConfig(projectPath, nextConfig),
@@ -227,22 +231,28 @@ export async function createHotReloaderTurbopack(
         config: nextConfig,
         dev,
         distDir,
+        projectPath,
         fetchCacheKeyPrefix: opts.nextConfig.experimental.fetchCacheKeyPrefix,
         hasRewrites,
         // TODO: Implement
         middlewareMatchers: undefined,
+        rewrites: opts.fsChecker.rewrites,
       }),
       buildId,
       encryptionKey,
       previewProps: opts.fsChecker.prerenderManifest.preview,
       browserslistQuery: supportedBrowsers.join(', '),
       noMangling: false,
+      currentNodeJsVersion,
     },
     {
       persistentCaching: isPersistentCachingEnabled(opts.nextConfig),
       memoryLimit: opts.nextConfig.experimental?.turbopackMemoryLimit,
     }
   )
+  backgroundLogCompilationEvents(project, {
+    eventTypes: ['StartupCacheInvalidationEvent'],
+  })
   setBundlerFindSourceMapImplementation(
     getSourceMapFromTurbopack.bind(null, project, projectPath)
   )
@@ -643,11 +653,19 @@ export async function createHotReloaderTurbopack(
   )
 
   const middlewares = [
-    getOverlayMiddleware(project, projectPath),
+    getOverlayMiddleware({
+      project,
+      projectPath,
+      isSrcDir: opts.isSrcDir,
+    }),
     getSourceMapMiddleware(project),
     getNextErrorFeedbackMiddleware(opts.telemetry),
     getDevOverlayFontMiddleware(),
     getDisableDevIndicatorMiddleware(),
+    getRestartDevServerMiddleware({
+      telemetry: opts.telemetry,
+      turbopackProject: project,
+    }),
   ]
 
   const versionInfoPromise = getVersionInfo()
@@ -737,7 +755,7 @@ export async function createHotReloaderTurbopack(
           clients.delete(client)
         })
 
-        client.addEventListener('message', ({ data }) => {
+        client.addEventListener('message', async ({ data }) => {
           const parsedData = JSON.parse(
             typeof data !== 'string' ? data.toString() : data
           )
@@ -765,6 +783,7 @@ export async function createHotReloaderTurbopack(
                 }
               )
               break
+
             case 'client-error': // { errorCount, clientId }
             case 'client-warning': // { warningCount, clientId }
             case 'client-success': // { clientId }
@@ -791,6 +810,20 @@ export async function createHotReloaderTurbopack(
             case 'client-added-page':
               // TODO
               break
+            case 'browser-logs': {
+              if (nextConfig.experimental.browserDebugInfoInTerminal) {
+                await receiveBrowserLogsTurbopack({
+                  entries: parsedData.entries,
+                  router: parsedData.router,
+                  sourceType: parsedData.sourceType,
+                  project,
+                  projectPath,
+                  distDir,
+                  config: nextConfig.experimental.browserDebugInfoInTerminal,
+                })
+              }
+              break
+            }
 
             default:
               // Might be a Turbopack message...
@@ -979,7 +1012,8 @@ export async function createHotReloaderTurbopack(
               inputPage,
               nextConfig.pageExtensions,
               opts.pagesDir,
-              opts.appDir
+              opts.appDir,
+              !!nextConfig.experimental.globalNotFound
             ))
 
           // If the route is actually an app page route, then we should have access

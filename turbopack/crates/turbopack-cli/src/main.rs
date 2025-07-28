@@ -1,11 +1,11 @@
 #![feature(future_join)]
 #![feature(min_specialization)]
 
-use std::path::Path;
+use std::{cell::RefCell, path::Path, time::Instant};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Registry};
+use tracing_subscriber::{Registry, layer::SubscriberExt, util::SubscriberInitExt};
 use turbo_tasks_malloc::TurboMalloc;
 use turbopack_cli::{arguments::Arguments, register};
 use turbopack_trace_utils::{
@@ -14,7 +14,7 @@ use turbopack_trace_utils::{
     raw_trace::RawTraceLayer,
     trace_writer::TraceWriter,
     tracing_presets::{
-        TRACING_OVERVIEW_TARGETS, TRACING_TURBOPACK_TARGETS, TRACING_TURBO_TASKS_TARGETS,
+        TRACING_OVERVIEW_TARGETS, TRACING_TURBO_TASKS_TARGETS, TRACING_TURBOPACK_TARGETS,
     },
 };
 
@@ -22,18 +22,31 @@ use turbopack_trace_utils::{
 static ALLOC: TurboMalloc = TurboMalloc;
 
 fn main() {
-    let args = Arguments::parse();
+    thread_local! {
+        static LAST_SWC_ATOM_GC_TIME: RefCell<Option<Instant>> = const { RefCell::new(None) };
+    }
 
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
+    let mut rt = tokio::runtime::Builder::new_multi_thread();
+    rt.enable_all()
         .on_thread_stop(|| {
             TurboMalloc::thread_stop();
         })
-        .disable_lifo_slot()
-        .build()
-        .unwrap()
-        .block_on(main_inner(args))
-        .unwrap();
+        .on_thread_park(|| {
+            LAST_SWC_ATOM_GC_TIME.with_borrow_mut(|cell| {
+                use std::time::Duration;
+
+                if cell.is_none_or(|t| t.elapsed() > Duration::from_secs(2)) {
+                    swc_core::ecma::atoms::hstr::global_atom_store_gc();
+                    *cell = Some(Instant::now());
+                }
+            });
+        });
+
+    #[cfg(not(codspeed))]
+    rt.disable_lifo_slot();
+
+    let args = Arguments::parse();
+    rt.build().unwrap().block_on(main_inner(args)).unwrap();
 }
 
 async fn main_inner(args: Arguments) -> Result<()> {

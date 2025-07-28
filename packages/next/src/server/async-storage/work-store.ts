@@ -12,6 +12,7 @@ import { AfterContext } from '../after/after-context'
 import { normalizeAppPath } from '../../shared/lib/router/utils/app-paths'
 import { createLazyResult, type LazyResult } from '../lib/lazy-result'
 import { getCacheHandlerEntries } from '../use-cache/handlers'
+import { createSnapshot } from '../app-render/async-local-storage'
 
 export type WorkStoreContext = {
   /**
@@ -64,6 +65,7 @@ export type WorkStoreContext = {
     | 'isDraftMode'
     | 'isDebugDynamicAccesses'
     | 'dev'
+    | 'hasReadableErrorStacks'
   > &
     RequestLifecycleOpts &
     Partial<Pick<RenderOpts, 'reactLoadableManifest'>>
@@ -121,7 +123,8 @@ export function createWorkStore({
       renderOpts.incrementalCache || (globalThis as any).__incrementalCache,
     cacheLifeProfiles: renderOpts.cacheLifeProfiles,
     isRevalidate: renderOpts.isRevalidate,
-    isPrerendering: renderOpts.nextExport,
+    isBuildTimePrerendering: renderOpts.nextExport,
+    hasReadableErrorStacks: renderOpts.hasReadableErrorStacks,
     fetchCache: renderOpts.fetchCache,
     isOnDemandRevalidate: renderOpts.isOnDemandRevalidate,
 
@@ -138,6 +141,7 @@ export function createWorkStore({
     dev: renderOpts.dev ?? false,
     previouslyRevalidatedTags,
     refreshTagsByCacheKind: createRefreshTagsByCacheKind(),
+    runInCleanSnapshot: createSnapshot(),
   }
 
   // TODO: remove this when we resolve accessing the store outside the execution context

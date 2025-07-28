@@ -109,11 +109,10 @@ describe.each([
             expect(output).toContain(
               isTurbopack
                 ? '' +
+                    // TODO(veil): Turbopack duplicates project path
                     '\n    at usingEval (../../test/integration/edge-runtime-dynamic-code/test/integration/edge-runtime-dynamic-code/lib/utils.js:11:16)' +
                     '\n    at middleware (../../test/integration/edge-runtime-dynamic-code/test/integration/edge-runtime-dynamic-code/middleware.js:12:52)' +
-                    // Next.js internal frame. Feel free to adjust.
-                    // Not ignore-listed because we're not in an isolated app and Next.js is symlinked so it's not in node_modules
-                    '\n    at'
+                    '\n   9 | export async function usingEval() {'
                 : '\n    at usingEval (../../test/integration/edge-runtime-dynamic-code/lib/utils.js:11:18)' +
                     '\n    at middleware (../../test/integration/edge-runtime-dynamic-code/middleware.js:12:53)' +
                     // Next.js internal frame. Feel free to adjust.
@@ -124,11 +123,10 @@ describe.each([
             expect(output).toContain(
               isTurbopack
                 ? '' +
+                    // TODO(veil): Turbopack duplicates project path
                     '\n    at usingEval (../../test/integration/edge-runtime-dynamic-code/test/integration/edge-runtime-dynamic-code/lib/utils.js:11:16)' +
                     '\n    at handler (../../test/integration/edge-runtime-dynamic-code/test/integration/edge-runtime-dynamic-code/pages/api/route.js:13:22)' +
-                    // Next.js internal frame. Feel free to adjust.
-                    // Not ignore-listed because we're not in an isolated app and Next.js is symlinked so it's not in node_modules
-                    '\n    at'
+                    '\n   9 | export async function usingEval() {'
                 : '\n    at usingEval (../../test/integration/edge-runtime-dynamic-code/lib/utils.js:11:18)' +
                     '\n    at handler (../../test/integration/edge-runtime-dynamic-code/pages/api/route.js:13:23)' +
                     '\n   9 | export async function usingEval() {'
@@ -175,9 +173,10 @@ describe.each([
                 ? '' +
                     '\n    at usingWebAssemblyCompile (../../test/integration/edge-runtime-dynamic-code/test/integration/edge-runtime-dynamic-code/lib/wasm.js:22:17)' +
                     '\n    at middleware (../../test/integration/edge-runtime-dynamic-code/test/integration/edge-runtime-dynamic-code/middleware.js:24:68)' +
-                    // Next.js internal frame. Feel free to adjust.
-                    // Not ignore-listed because we're not in an isolated app and Next.js is symlinked so it's not in node_modules
-                    '\n    at'
+                    '\n  20 |' +
+                    '\n  21 | export async function usingWebAssemblyCompile(x) {' +
+                    '\n> 22 |   const module = await WebAssembly.compile(SQUARE_WASM_BUFFER)' +
+                    '\n     |                 ^'
                 : '\n    at usingWebAssemblyCompile (../../test/integration/edge-runtime-dynamic-code/lib/wasm.js:22:23)' +
                     '\n    at middleware (../../test/integration/edge-runtime-dynamic-code/middleware.js:24:68)' +
                     // Next.js internal frame. Feel free to adjust.
@@ -188,11 +187,10 @@ describe.each([
             expect(output).toContain(
               isTurbopack
                 ? '' +
+                    // TODO(veil): Turbopack duplicates project path
                     '\n    at usingWebAssemblyCompile (../../test/integration/edge-runtime-dynamic-code/test/integration/edge-runtime-dynamic-code/lib/wasm.js:22:17)' +
                     '\n    at handler (../../test/integration/edge-runtime-dynamic-code/test/integration/edge-runtime-dynamic-code/pages/api/route.js:17:42)' +
-                    // Next.js internal frame. Feel free to adjust.
-                    // Not ignore-listed because we're not in an isolated app and Next.js is symlinked so it's not in node_modules
-                    '\n    at'
+                    '\n  20 |'
                 : '' +
                     '\n    at usingWebAssemblyCompile (../../test/integration/edge-runtime-dynamic-code/lib/wasm.js:22:23)' +
                     '\n    at handler (../../test/integration/edge-runtime-dynamic-code/pages/api/route.js:17:42)' +
@@ -232,14 +230,12 @@ describe.each([
                 ? '' +
                     '\n    at async usingWebAssemblyInstantiateWithBuffer (../../test/integration/edge-runtime-dynamic-code/test/integration/edge-runtime-dynamic-code/lib/wasm.js:28:23)' +
                     '\n    at async middleware (../../test/integration/edge-runtime-dynamic-code/test/integration/edge-runtime-dynamic-code/middleware.js:37:29)' +
-                    // Next.js internal frame. Feel free to adjust.
-                    // Not ignore-listed because we're not in an isolated app and Next.js is symlinked so it's not in node_modules
-                    '\n    at'
+                    '\n  26 |\n'
                 : '' +
                     '\n    at async usingWebAssemblyInstantiateWithBuffer (../../test/integration/edge-runtime-dynamic-code/lib/wasm.js:28:23)' +
                     '\n    at async middleware (../../test/integration/edge-runtime-dynamic-code/middleware.js:37:29)' +
                     // Next.js internal frame. Feel free to adjust.
-                    // Not ignore-listed because we're not in an isolated app and Next.js is symlinked so it's not in node_modules
+                    // TODO(veil): https://linear.app/vercel/issue/NDX-464
                     '\n    at '
             )
             expect(stripAnsi(output)).toContain(
@@ -254,9 +250,7 @@ describe.each([
                     // TODO(veil): Turbopack duplicates project path
                     '\n    at async usingWebAssemblyInstantiateWithBuffer (../../test/integration/edge-runtime-dynamic-code/test/integration/edge-runtime-dynamic-code/lib/wasm.js:28:23)' +
                     '\n    at async handler (../../test/integration/edge-runtime-dynamic-code/test/integration/edge-runtime-dynamic-code/pages/api/route.js:21:16)' +
-                    // Next.js internal frame. Feel free to adjust.
-                    // Not ignore-listed because we're not in an isolated app and Next.js is symlinked so it's not in node_modules
-                    '\n    at'
+                    '\n  26 |'
                 : '' +
                     '\n    at async usingWebAssemblyInstantiateWithBuffer (../../test/integration/edge-runtime-dynamic-code/lib/wasm.js:28:23)' +
                     '\n    at async handler (../../test/integration/edge-runtime-dynamic-code/pages/api/route.js:21:16)' +

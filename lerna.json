@@ -11,10 +11,11 @@
     "publish": {
       "npmClient": "npm",
       "allowBranch": [
-        "canary"
+        "canary",
+        "next-15-4"
       ],
       "registry": "https://registry.npmjs.org/"
     }
   },
-  "version": "15.3.0"
+  "version": "15.4.4"
 }

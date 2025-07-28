@@ -11,6 +11,7 @@ import type {
   CacheNodeSeedData,
   Segment as FlightRouterStateSegment,
 } from '../../../server/app-render/types'
+import { HasLoadingBoundary } from '../../../server/app-render/types'
 import {
   NEXT_DID_POSTPONE_HEADER,
   NEXT_ROUTER_PREFETCH_HEADER,
@@ -24,10 +25,12 @@ import {
 import {
   createFetch,
   createFromNextReadableStream,
+  type RSCResponse,
   type RequestHeaders,
 } from '../router-reducer/fetch-server-response'
 import {
   pingPrefetchTask,
+  isPrefetchTaskDirty,
   type PrefetchTask,
   type PrefetchSubtaskResult,
 } from './scheduler'
@@ -55,6 +58,10 @@ import { normalizeFlightData } from '../../flight-data-helpers'
 import { STATIC_STALETIME_MS } from '../router-reducer/prefetch-cache-utils'
 import { pingVisibleLinks } from '../links'
 import { PAGE_SEGMENT_KEY } from '../../../shared/lib/segment'
+import {
+  DOC_PREFETCH_RANGE_HEADER_VALUE,
+  doesExportedHtmlMatchBuildId,
+} from '../../../shared/lib/segment-cache/output-export-prefetch-encoding'
 
 // A note on async/await when working in the prefetch cache:
 //
@@ -84,6 +91,13 @@ export type RouteTree = {
     [parallelRouteKey: string]: RouteTree
   }
   isRootLayout: boolean
+
+  // If this is a dynamic route, indicates whether there is a loading boundary
+  // somewhere in the tree. If not, we can skip the prefetch for the data,
+  // because we know it would be an empty response. (For a static/PPR route,
+  // this value is disregarded, because in that model `loading.tsx` is treated
+  // like any other Suspense boundary.)
+  hasLoadingBoundary: HasLoadingBoundary
 }
 
 type RouteCacheEntryShared = {
@@ -245,6 +259,14 @@ let segmentCacheLru = createLRU<SegmentCacheEntry>(
   onSegmentLRUEviction
 )
 
+// All invalidation listeners for the whole cache are tracked in single set.
+// Since we don't yet support tag or path-based invalidation, there's no point
+// tracking them any more granularly than this. Once we add granular
+// invalidation, that may change, though generally the model is to just notify
+// the listeners and allow the caller to poll the prefetch cache with a new
+// prefetch task if desired.
+let invalidationListeners: Set<PrefetchTask> | null = null
+
 // Incrementing counter used to track cache invalidations.
 let currentCacheVersion = 0
 
@@ -276,6 +298,65 @@ export function revalidateEntireCache(
 
   // Prefetch all the currently visible links again, to re-fill the cache.
   pingVisibleLinks(nextUrl, tree)
+
+  // Similarly, notify all invalidation listeners (i.e. those passed to
+  // `router.prefetch(onInvalidate)`), so they can trigger a new prefetch
+  // if needed.
+  pingInvalidationListeners(nextUrl, tree)
+}
+
+function attachInvalidationListener(task: PrefetchTask): void {
+  // This function is called whenever a prefetch task reads a cache entry. If
+  // the task has an onInvalidate function associated with it — i.e. the one
+  // optionally passed to router.prefetch(onInvalidate) — then we attach that
+  // listener to the every cache entry that the task reads. Then, if an entry
+  // is invalidated, we call the function.
+  if (task.onInvalidate !== null) {
+    if (invalidationListeners === null) {
+      invalidationListeners = new Set([task])
+    } else {
+      invalidationListeners.add(task)
+    }
+  }
+}
+
+function notifyInvalidationListener(task: PrefetchTask): void {
+  const onInvalidate = task.onInvalidate
+  if (onInvalidate !== null) {
+    // Clear the callback from the task object to guarantee it's not called more
+    // than once.
+    task.onInvalidate = null
+
+    // This is a user-space function, so we must wrap in try/catch.
+    try {
+      onInvalidate()
+    } catch (error) {
+      if (typeof reportError === 'function') {
+        reportError(error)
+      } else {
+        console.error(error)
+      }
+    }
+  }
+}
+
+export function pingInvalidationListeners(
+  nextUrl: string | null,
+  tree: FlightRouterState
+): void {
+  // The rough equivalent of pingVisibleLinks, but for onInvalidate callbacks.
+  // This is called when the Next-Url or the base tree changes, since those
+  // may affect the result of a prefetch task. It's also called after a
+  // cache invalidation.
+  if (invalidationListeners !== null) {
+    const tasks = invalidationListeners
+    invalidationListeners = null
+    for (const task of tasks) {
+      if (isPrefetchTaskDirty(task, nextUrl, tree)) {
+        notifyInvalidationListener(task)
+      }
+    }
+  }
 }
 
 export function readExactRouteCacheEntry(
@@ -445,6 +526,8 @@ export function readOrCreateRouteCacheEntry(
   now: number,
   task: PrefetchTask
 ): RouteCacheEntry {
+  attachInvalidationListener(task)
+
   const key = task.key
   const existingEntry = readRouteCacheEntry(now, key)
   if (existingEntry !== null) {
@@ -801,6 +884,9 @@ function convertTreePrefetchToRouteTree(
     segment: prefetch.segment,
     slots,
     isRootLayout: prefetch.isRootLayout,
+    // This field is only relevant to dynamic routes. For a PPR/static route,
+    // there's always some partial loading state we can fetch.
+    hasLoadingBoundary: HasLoadingBoundary.SegmentHasLoadingBoundary,
   }
 }
 
@@ -865,6 +951,10 @@ function convertFlightRouterStateToRouteTree(
     segment: segmentWithoutSearchParams,
     slots,
     isRootLayout: flightRouterState[4] === true,
+    hasLoadingBoundary:
+      flightRouterState[5] !== undefined
+        ? flightRouterState[5]
+        : HasLoadingBoundary.SubtreeHasNoLoadingBoundary,
   }
 }
 
@@ -911,14 +1001,68 @@ export async function fetchRouteOnCacheMiss(
     headers[NEXT_URL] = nextUrl
   }
 
-  // In output: "export" mode, we need to add the segment path to the URL.
-  const url = new URL(href)
-  const requestUrl = isOutputExportMode
-    ? addSegmentPathToUrlInOutputExportMode(url, segmentPath)
-    : url
-
   try {
-    const response = await fetchPrefetchResponse(requestUrl, headers)
+    let response
+    let urlAfterRedirects
+    if (isOutputExportMode) {
+      // In output: "export" mode, we can't use headers to request a particular
+      // segment. Instead, we encode the extra request information into the URL.
+      // This is not part of the "public" interface of the app; it's an internal
+      // Next.js implementation detail that the app developer should not need to
+      // concern themselves with.
+      //
+      // For example, to request a segment:
+      //
+      //   Path passed to <Link>:   /path/to/page
+      //   Path passed to fetch:    /path/to/page/__next-segments/_tree
+      //
+      //   (This is not the exact protocol, just an illustration.)
+      //
+      // Before we do that, though, we need to account for redirects. Even in
+      // output: "export" mode, a proxy might redirect the page to a different
+      // location, but we shouldn't assume or expect that they also redirect all
+      // the segment files, too.
+      //
+      // To check whether the page is redirected, we perform a range request of
+      // the first N bytes of the HTML document. The canonical URL is determined
+      // from the response.
+      //
+      // Then we can use the canonical URL to request the route tree.
+      //
+      // NOTE: We could embed the route tree into the HTML document, to avoid
+      // a second request. We're not doing that currently because it would make
+      // the HTML document larger and affect normal page loads.
+      const url = new URL(href)
+      const htmlResponse = await fetch(href, {
+        headers: {
+          Range: DOC_PREFETCH_RANGE_HEADER_VALUE,
+        },
+      })
+      const partialHtml = await htmlResponse.text()
+      if (!doesExportedHtmlMatchBuildId(partialHtml, getAppBuildId())) {
+        // The target page is not part of this app, or it belongs to a
+        // different build.
+        rejectRouteCacheEntry(entry, Date.now() + 10 * 1000)
+        return null
+      }
+      urlAfterRedirects = htmlResponse.redirected
+        ? new URL(htmlResponse.url)
+        : url
+      response = await fetchPrefetchResponse(
+        addSegmentPathToUrlInOutputExportMode(urlAfterRedirects, segmentPath),
+        headers
+      )
+    } else {
+      // "Server" mode. We can use request headers instead of the pathname.
+      // TODO: The eventual plan is to get rid of our custom request headers and
+      // encode everything into the URL, using a similar strategy to the
+      // "output: export" block above.
+      const url = new URL(href)
+      response = await fetchPrefetchResponse(url, headers)
+      urlAfterRedirects =
+        response !== null && response.redirected ? new URL(response.url) : url
+    }
+
     if (
       !response ||
       !response.ok ||
@@ -947,17 +1091,7 @@ export async function fetchRouteOnCacheMiss(
     // Or, we should just use a (readonly) URL object instead. The type of the
     // prop that we pass to seed the initial state does not need to be the same
     // type as the state itself.
-    const canonicalUrl = createHrefFromUrl(
-      new URL(
-        response.redirected
-          ? removeSegmentPathFromURLInOutputExportMode(
-              href,
-              requestUrl.href,
-              response.url
-            )
-          : href
-      )
-    )
+    const canonicalUrl = createHrefFromUrl(urlAfterRedirects)
 
     // Check whether the response varies based on the Next-Url header.
     const varyHeader = response.headers.get('vary')
@@ -994,6 +1128,7 @@ export async function fetchRouteOnCacheMiss(
         // TODO: Consider moving the build ID to a response header so we can check
         // it before decoding the response, and so there's one way of checking
         // across all response types.
+        // TODO: We should cache the fact that this is an MPA navigation.
         rejectRouteCacheEntry(entry, Date.now() + 10 * 1000)
         return null
       }
@@ -1025,6 +1160,16 @@ export async function fetchRouteOnCacheMiss(
       const serverData = await (createFromNextReadableStream(
         prefetchStream
       ) as Promise<NavigationFlightResponse>)
+      if (serverData.b !== getAppBuildId()) {
+        // The server build does not match the client. Treat as a 404. During
+        // an actual navigation, the router will trigger an MPA navigation.
+        // TODO: Consider moving the build ID to a response header so we can check
+        // it before decoding the response, and so there's one way of checking
+        // across all response types.
+        // TODO: We should cache the fact that this is an MPA navigation.
+        rejectRouteCacheEntry(entry, Date.now() + 10 * 1000)
+        return null
+      }
 
       writeDynamicTreeResponseIntoCache(
         Date.now(),
@@ -1276,22 +1421,13 @@ export async function fetchSegmentPrefetchesUsingDynamicRequest(
 function writeDynamicTreeResponseIntoCache(
   now: number,
   task: PrefetchTask,
-  response: Response,
+  response: RSCResponse,
   serverData: NavigationFlightResponse,
   entry: PendingRouteCacheEntry,
   couldBeIntercepted: boolean,
   canonicalUrl: string,
   routeIsPPREnabled: boolean
 ) {
-  if (serverData.b !== getAppBuildId()) {
-    // The server build does not match the client. Treat as a 404. During
-    // an actual navigation, the router will trigger an MPA navigation.
-    // TODO: Consider moving the build ID to a response header so we can check
-    // it before decoding the response, and so there's one way of checking
-    // across all response types.
-    rejectRouteCacheEntry(entry, now + 10 * 1000)
-    return
-  }
   const normalizedFlightDataResult = normalizeFlightData(serverData.f)
   if (
     // A string result means navigating to this route will result in an
@@ -1330,7 +1466,7 @@ function writeDynamicTreeResponseIntoCache(
     entry,
     convertRootFlightRouterStateToRouteTree(flightRouterState),
     flightData.head,
-    isResponsePartial,
+    flightData.isHeadPartial,
     now + staleTimeMs,
     couldBeIntercepted,
     canonicalUrl,
@@ -1375,7 +1511,7 @@ function rejectSegmentEntriesIfStillPending(
 function writeDynamicRenderResponseIntoCache(
   now: number,
   task: PrefetchTask,
-  response: Response,
+  response: RSCResponse,
   serverData: NavigationFlightResponse,
   isResponsePartial: boolean,
   route: FulfilledRouteCacheEntry,
@@ -1542,7 +1678,7 @@ function writeSeedDataIntoCache(
 async function fetchPrefetchResponse(
   url: URL,
   headers: RequestHeaders
-): Promise<Response | null> {
+): Promise<RSCResponse | null> {
   const fetchPriority = 'low'
   const response = await createFetch(url, headers, fetchPriority)
   if (!response.ok) {
@@ -1630,35 +1766,6 @@ function addSegmentPathToUrlInOutputExportMode(
     return staticUrl
   }
   return url
-}
-
-function removeSegmentPathFromURLInOutputExportMode(
-  href: string,
-  requestUrl: string,
-  redirectUrl: string
-) {
-  if (isOutputExportMode) {
-    // Reverse of addSegmentPathToUrlInOutputExportMode.
-    //
-    // In output: "export" mode, we append an extra string to the URL that
-    // represents the segment path. If the server performs a redirect, it must
-    // include the segment path in new URL.
-    //
-    // This removes the segment path from the redirected URL to obtain the
-    // URL of the page.
-    const segmentPath = requestUrl.substring(href.length)
-    if (redirectUrl.endsWith(segmentPath)) {
-      // Remove the segment path from the redirect URL to get the page URL.
-      return redirectUrl.substring(0, redirectUrl.length - segmentPath.length)
-    } else {
-      // The server redirected to a URL that doesn't include the segment path.
-      // This suggests the server may not have been configured correctly, but
-      // we'll assume the redirected URL represents the page URL and continue.
-      // TODO: Consider printing a warning with a link to a page that explains
-      // how to configure redirects and rewrites correctly.
-    }
-  }
-  return redirectUrl
 }
 
 function createPromiseWithResolvers<T>(): PromiseWithResolvers<T> {

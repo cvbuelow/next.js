@@ -28,18 +28,27 @@ function runTests({ isDev }) {
         expect(description).toMatchInlineSnapshot(`"Processing image failed"`)
       } else {
         expect(description).toMatchInlineSnapshot(
-          `"Error: Image import "../public/invalid.svg" is not a valid image file. The image may be corrupted or an unsupported format."`
+          `"Image import "../public/invalid.svg" is not a valid image file. The image may be corrupted or an unsupported format."`
         )
       }
       const source = await getRedboxSource(browser)
       if (process.env.IS_TURBOPACK_TEST) {
         expect(source).toMatchInlineSnapshot(`
-          "./test/integration/next-image-new/invalid-image-import/public/invalid.svg
-          Processing image failed
-          Failed to parse svg source code for image dimensions
+         "./test/integration/next-image-new/invalid-image-import/public/invalid.svg
+         Processing image failed
+         Failed to parse svg source code for image dimensions
 
-          Caused by:
-          - Source code does not contain a <svg> root element"
+         Caused by:
+         - Source code does not contain a <svg> root element
+
+         Import traces:
+           Browser:
+             ./test/integration/next-image-new/invalid-image-import/public/invalid.svg
+             ./test/integration/next-image-new/invalid-image-import/pages/index.js
+
+           SSR:
+             ./test/integration/next-image-new/invalid-image-import/public/invalid.svg
+             ./test/integration/next-image-new/invalid-image-import/pages/index.js"
         `)
       } else {
         expect(source).toMatchInlineSnapshot(`

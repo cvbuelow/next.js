@@ -83,6 +83,7 @@ import {
 import { RedirectStatusCode } from '../../../client/components/redirect-status-code'
 import { INFINITE_CACHE } from '../../../lib/constants'
 import { executeRevalidates } from '../../revalidation-utils'
+import { trackPendingModules } from '../../app-render/module-loading/track-module-loading.external'
 
 export class WrappedNextRouterError {
   constructor(
@@ -214,10 +215,12 @@ export class AppRouteRouteModule extends RouteModule<
   constructor({
     userland,
     definition,
+    distDir,
+    projectDir,
     resolvedPagePath,
     nextConfigOutput,
   }: AppRouteRouteModuleOptions) {
-    super({ userland, definition })
+    super({ userland, definition, distDir, projectDir })
 
     this.resolvedPagePath = resolvedPagePath
     this.nextConfigOutput = nextConfigOutput
@@ -225,6 +228,7 @@ export class AppRouteRouteModule extends RouteModule<
     // Automatically implement some methods if they aren't implemented by the
     // userland module.
     this.methods = autoImplementMethods(userland)
+    this.isAppRouter = true
 
     // Get the non-static methods for this route.
     this.hasNonStaticMethods = hasNonStaticMethods(userland)
@@ -388,12 +392,16 @@ export class AppRouteRouteModule extends RouteModule<
               // During prospective render we don't use a controller
               // because we need to let all caches fill.
               dynamicTracking,
+              allowEmptyStaticShell: false,
               revalidate: defaultRevalidate,
               expire: INFINITE_CACHE,
               stale: INFINITE_CACHE,
               tags: [...implicitTags.tags],
+              // TODO: Shouldn't we provide an RDC here?
               prerenderResumeDataCache: null,
+              renderResumeDataCache: null,
               hmrRefreshHash: undefined,
+              captureOwnerStack: undefined,
             })
 
           let prospectiveResult
@@ -439,6 +447,8 @@ export class AppRouteRouteModule extends RouteModule<
               }
             )
           }
+
+          trackPendingModules(cacheSignal)
           await cacheSignal.cacheReady()
 
           if (prospectiveRenderIsDynamic) {
@@ -474,12 +484,16 @@ export class AppRouteRouteModule extends RouteModule<
             controller: finalController,
             cacheSignal: null,
             dynamicTracking,
+            allowEmptyStaticShell: false,
             revalidate: defaultRevalidate,
             expire: INFINITE_CACHE,
             stale: INFINITE_CACHE,
             tags: [...implicitTags.tags],
+            // TODO: Shouldn't we provide an RDC here?
             prerenderResumeDataCache: null,
+            renderResumeDataCache: null,
             hmrRefreshHash: undefined,
+            captureOwnerStack: undefined,
           })
 
           let responseHandled = false
@@ -719,6 +733,14 @@ export class AppRouteRouteModule extends RouteModule<
               case 'force-dynamic': {
                 // Routes of generated paths should be dynamic
                 workStore.forceDynamic = true
+                if (workStore.isStaticGeneration) {
+                  const err = new DynamicServerError(
+                    'Route is configured with dynamic = error which cannot be statically generated.'
+                  )
+                  workStore.dynamicUsageDescription = err.message
+                  workStore.dynamicUsageStack = err.stack
+                  throw err
+                }
                 break
               }
               case 'force-static':
@@ -1127,7 +1149,7 @@ function createDynamicIOError(route: string) {
   )
 }
 
-export function trackDynamic(
+function trackDynamic(
   store: WorkStore,
   workUnitStore: undefined | WorkUnitStore,
   expression: string

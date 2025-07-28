@@ -2,13 +2,14 @@ import { getTracer } from '../lib/trace/tracer'
 import { AppRenderSpan } from '../lib/trace/constants'
 import { DetachedPromise } from '../../lib/detached-promise'
 import { scheduleImmediate, atLeastOneTask } from '../../lib/scheduler'
-import { ENCODED_TAGS } from './encodedTags'
+import { ENCODED_TAGS } from './encoded-tags'
 import {
   indexOfUint8Array,
   isEquivalentUint8Arrays,
   removeFromUint8Array,
 } from './uint8array-helpers'
 import { MISSING_ROOT_TAGS_ERROR } from '../../shared/lib/errors/constants'
+import { insertBuildIdComment } from '../../shared/lib/segment-cache/output-export-prefetch-encoding'
 
 function voidCatch() {
   // this catcher is designed to be used with pipeTo where we expect the underlying
@@ -179,18 +180,148 @@ export function createBufferedTransformStream(): TransformStream<
   })
 }
 
+function createPrefetchCommentStream(
+  isBuildTimePrerendering: boolean,
+  buildId: string
+): TransformStream<Uint8Array, Uint8Array> {
+  // Insert an extra comment at the beginning of the HTML document. This must
+  // come after the DOCTYPE, which is inserted by React.
+  //
+  // The first chunk sent by React will contain the doctype. After that, we can
+  // pass through the rest of the chunks as-is.
+  let didTransformFirstChunk = false
+  return new TransformStream({
+    transform(chunk, controller) {
+      if (isBuildTimePrerendering && !didTransformFirstChunk) {
+        didTransformFirstChunk = true
+        const decoder = new TextDecoder('utf-8', { fatal: true })
+        const chunkStr = decoder.decode(chunk, {
+          stream: true,
+        })
+        const updatedChunkStr = insertBuildIdComment(chunkStr, buildId)
+        controller.enqueue(encoder.encode(updatedChunkStr))
+        return
+      }
+      controller.enqueue(chunk)
+    },
+  })
+}
+
 export function renderToInitialFizzStream({
   ReactDOMServer,
   element,
   streamOptions,
 }: {
-  ReactDOMServer: typeof import('react-dom/server.edge')
+  ReactDOMServer: {
+    renderToReadableStream: typeof import('react-dom/server').renderToReadableStream
+  }
   element: React.ReactElement
   streamOptions?: Parameters<typeof ReactDOMServer.renderToReadableStream>[1]
 }): Promise<ReactReadableStream> {
   return getTracer().trace(AppRenderSpan.renderToReadableStream, async () =>
     ReactDOMServer.renderToReadableStream(element, streamOptions)
   )
+}
+
+function createMetadataTransformStream(
+  insert: () => Promise<string> | string
+): TransformStream<Uint8Array, Uint8Array> {
+  let chunkIndex = -1
+  let isMarkRemoved = false
+
+  return new TransformStream({
+    async transform(chunk, controller) {
+      let iconMarkIndex = -1
+      let closedHeadIndex = -1
+      chunkIndex++
+
+      if (isMarkRemoved) {
+        controller.enqueue(chunk)
+        return
+      }
+      let iconMarkLength = 0
+      // Only search for the closed head tag once
+      if (iconMarkIndex === -1) {
+        iconMarkIndex = indexOfUint8Array(chunk, ENCODED_TAGS.META.ICON_MARK)
+        if (iconMarkIndex === -1) {
+          controller.enqueue(chunk)
+          return
+        } else {
+          // When we found the `<meta name="«nxt-icon»"` tag prefix, we will remove it from the chunk.
+          // Its close tag could either be `/>` or `>`, checking the next char to ensure we cover both cases.
+          iconMarkLength = ENCODED_TAGS.META.ICON_MARK.length
+          // Check if next char is /, this is for xml mode.
+          if (chunk[iconMarkIndex + iconMarkLength] === 47) {
+            iconMarkLength += 2
+          } else {
+            // The last char is `>`
+            iconMarkLength++
+          }
+        }
+      }
+
+      // Check if icon mark is inside <head> tag in the first chunk.
+      if (chunkIndex === 0) {
+        closedHeadIndex = indexOfUint8Array(chunk, ENCODED_TAGS.CLOSED.HEAD)
+        if (iconMarkIndex !== -1) {
+          // The mark icon is located in the 1st chunk before the head tag.
+          // We do not need to insert the script tag in this case because it's in the head.
+          // Just remove the icon mark from the chunk.
+          if (iconMarkIndex < closedHeadIndex) {
+            const replaced = new Uint8Array(chunk.length - iconMarkLength)
+
+            // Remove the icon mark from the chunk.
+            replaced.set(chunk.subarray(0, iconMarkIndex))
+            replaced.set(
+              chunk.subarray(iconMarkIndex + iconMarkLength),
+              iconMarkIndex
+            )
+            chunk = replaced
+          } else {
+            // The icon mark is after the head tag, replace and insert the script tag at that position.
+            const insertion = await insert()
+            const encodedInsertion = encoder.encode(insertion)
+            const insertionLength = encodedInsertion.length
+            const replaced = new Uint8Array(
+              chunk.length - iconMarkLength + insertionLength
+            )
+            replaced.set(chunk.subarray(0, iconMarkIndex))
+            replaced.set(encodedInsertion, iconMarkIndex)
+            replaced.set(
+              chunk.subarray(iconMarkIndex + iconMarkLength),
+              iconMarkIndex + insertionLength
+            )
+            chunk = replaced
+          }
+          isMarkRemoved = true
+        }
+        // If there's no icon mark located, it will be handled later when if present in the following chunks.
+      } else {
+        // When it's appeared in the following chunks, we'll need to
+        // remove the mark and then insert the script tag at that position.
+        const insertion = await insert()
+        const encodedInsertion = encoder.encode(insertion)
+        const insertionLength = encodedInsertion.length
+        // Replace the icon mark with the hoist script or empty string.
+        const replaced = new Uint8Array(
+          chunk.length - iconMarkLength + insertionLength
+        )
+        // Set the first part of the chunk, before the icon mark.
+        replaced.set(chunk.subarray(0, iconMarkIndex))
+        // Set the insertion after the icon mark.
+        replaced.set(encodedInsertion, iconMarkIndex)
+
+        // Set the rest of the chunk after the icon mark.
+        replaced.set(
+          chunk.subarray(iconMarkIndex + iconMarkLength),
+          iconMarkIndex + insertionLength
+        )
+        chunk = replaced
+        isMarkRemoved = true
+      }
+      controller.enqueue(chunk)
+    },
+  })
 }
 
 function createHeadInsertionTransformStream(
@@ -531,6 +662,8 @@ function chainTransformers<T>(
 export type ContinueStreamOptions = {
   inlinedDataStream: ReadableStream<Uint8Array> | undefined
   isStaticGeneration: boolean
+  isBuildTimePrerendering: boolean
+  buildId: string
   getServerInsertedHTML: () => Promise<string>
   getServerInsertedMetadata: () => Promise<string>
   validateRootLayout?: boolean
@@ -546,6 +679,8 @@ export async function continueFizzStream(
     suffix,
     inlinedDataStream,
     isStaticGeneration,
+    isBuildTimePrerendering,
+    buildId,
     getServerInsertedHTML,
     getServerInsertedMetadata,
     validateRootLayout,
@@ -564,8 +699,11 @@ export async function continueFizzStream(
     // Buffer everything to avoid flushing too frequently
     createBufferedTransformStream(),
 
-    // Insert generated metadata
-    createHeadInsertionTransformStream(getServerInsertedMetadata),
+    // Add build id comment to start of the HTML document (in export mode)
+    createPrefetchCommentStream(isBuildTimePrerendering, buildId),
+
+    // Transform metadata
+    createMetadataTransformStream(getServerInsertedMetadata),
 
     // Insert suffix content
     suffixUnclosed != null && suffixUnclosed.length > 0
@@ -607,10 +745,8 @@ export async function continueDynamicPrerender(
       .pipeThrough(createStripDocumentClosingTagsTransform())
       // Insert generated tags to head
       .pipeThrough(createHeadInsertionTransformStream(getServerInsertedHTML))
-      // Insert generated metadata
-      .pipeThrough(
-        createHeadInsertionTransformStream(getServerInsertedMetadata)
-      )
+      // Transform metadata
+      .pipeThrough(createMetadataTransformStream(getServerInsertedMetadata))
   )
 }
 
@@ -618,6 +754,8 @@ type ContinueStaticPrerenderOptions = {
   inlinedDataStream: ReadableStream<Uint8Array>
   getServerInsertedHTML: () => Promise<string>
   getServerInsertedMetadata: () => Promise<string>
+  isBuildTimePrerendering: boolean
+  buildId: string
 }
 
 export async function continueStaticPrerender(
@@ -626,18 +764,22 @@ export async function continueStaticPrerender(
     inlinedDataStream,
     getServerInsertedHTML,
     getServerInsertedMetadata,
+    isBuildTimePrerendering,
+    buildId,
   }: ContinueStaticPrerenderOptions
 ) {
   return (
     prerenderStream
       // Buffer everything to avoid flushing too frequently
       .pipeThrough(createBufferedTransformStream())
+      // Add build id comment to start of the HTML document (in export mode)
+      .pipeThrough(
+        createPrefetchCommentStream(isBuildTimePrerendering, buildId)
+      )
       // Insert generated tags to head
       .pipeThrough(createHeadInsertionTransformStream(getServerInsertedHTML))
-      // Insert generated metadata to head
-      .pipeThrough(
-        createHeadInsertionTransformStream(getServerInsertedMetadata)
-      )
+      // Transform metadata
+      .pipeThrough(createMetadataTransformStream(getServerInsertedMetadata))
       // Insert the inlined data (Flight data, form state, etc.) stream into the HTML
       .pipeThrough(createMergedTransformStream(inlinedDataStream))
       // Close tags should always be deferred to the end
@@ -665,10 +807,8 @@ export async function continueDynamicHTMLResume(
       .pipeThrough(createBufferedTransformStream())
       // Insert generated tags to head
       .pipeThrough(createHeadInsertionTransformStream(getServerInsertedHTML))
-      // Insert generated metadata to body
-      .pipeThrough(
-        createHeadInsertionTransformStream(getServerInsertedMetadata)
-      )
+      // Transform metadata
+      .pipeThrough(createMetadataTransformStream(getServerInsertedMetadata))
       // Insert the inlined data (Flight data, form state, etc.) stream into the HTML
       .pipeThrough(createMergedTransformStream(inlinedDataStream))
       // Close tags should always be deferred to the end
