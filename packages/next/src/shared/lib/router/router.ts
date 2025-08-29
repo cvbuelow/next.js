@@ -432,7 +432,7 @@ const SSG_DATA_NOT_FOUND = Symbol('SSG_DATA_NOT_FOUND')
 const PREFETCH = process.env.__NEXT_PREFETCH as ExperimentalConfig['prefetch']
 const isModelPage = (pathname: string) =>
   pathname.includes('/designer/[userName]/3d-model/[modelIdentifier]') &&
-  !pathname.includes('[projectIdentifier]')
+  !pathname.includes('project')
 
 function fetchRetry(
   url: string,
