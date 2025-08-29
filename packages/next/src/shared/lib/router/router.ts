@@ -430,7 +430,9 @@ const manualScrollRestoration =
 const SSG_DATA_NOT_FOUND = Symbol('SSG_DATA_NOT_FOUND')
 
 const PREFETCH = process.env.__NEXT_PREFETCH as ExperimentalConfig['prefetch']
-const MODEL_PAGE_PATH = '/designer/[userName]/3d-model/[modelIdentifier]'
+const isModelPage = (pathname: string) =>
+  pathname.includes('/designer/[userName]/3d-model/[modelIdentifier]') &&
+  !pathname.includes('[projectIdentifier]')
 
 function fetchRetry(
   url: string,
@@ -1567,7 +1569,7 @@ export default class Router implements BaseRouter {
         resolvedAs,
         routeProps: {
           ...routeProps,
-          isModelPage: pathname === MODEL_PAGE_PATH,
+          isModelPage: isModelPage(pathname),
         },
         locale: nextState.locale,
         isPreview: nextState.isPreview,
@@ -2135,7 +2137,7 @@ export default class Router implements BaseRouter {
           (res) => ({
             Component: res.page,
             styleSheets: res.styleSheets,
-            __N_SSG: pathname === MODEL_PAGE_PATH ? false : res.mod.__N_SSG,
+            __N_SSG: isModelPage(pathname) ? false : res.mod.__N_SSG,
             __N_SSP: res.mod.__N_SSP,
           })
         ))
