@@ -84,7 +84,7 @@ use crate::{
     instrumentation::InstrumentationEndpoint,
     middleware::MiddlewareEndpoint,
     pages::PagesProject,
-    route::{AppPageRoute, Endpoint, Endpoints, Route},
+    route::{Endpoint, EndpointGroup, EndpointGroupKey, EndpointGroups, Endpoints, Route},
     versioned_content_map::VersionedContentMap,
 };
 
@@ -230,6 +230,14 @@ pub struct PartialProjectOptions {
 
     /// Options for draft mode.
     pub preview_props: Option<DraftModeOptions>,
+
+    /// The browserslist query to use for targeting browsers.
+    pub browserslist_query: Option<RcStr>,
+
+    /// When the code is minified, this opts out of the default mangling of
+    /// local names for variables, functions etc., which can be useful for
+    /// debugging/profiling purposes.
+    pub no_mangling: Option<bool>,
 }
 
 #[derive(
@@ -348,6 +356,8 @@ impl ProjectContainer {
             encryption_key,
             build_id,
             preview_props,
+            browserslist_query,
+            no_mangling,
         } = options;
 
         let resolved_self = self.to_resolved().await?;
@@ -388,6 +398,12 @@ impl ProjectContainer {
         }
         if let Some(preview_props) = preview_props {
             new_options.preview_props = preview_props;
+        }
+        if let Some(browserslist_query) = browserslist_query {
+            new_options.browserslist_query = browserslist_query;
+        }
+        if let Some(no_mangling) = no_mangling {
+            new_options.no_mangling = no_mangling;
         }
 
         // TODO: Handle mode switch, should prevent mode being switched.
@@ -534,6 +550,7 @@ impl ProjectContainer {
     }
 }
 
+#[derive(Clone)]
 #[turbo_tasks::value]
 pub struct Project {
     /// An absolute root path (Windows or Unix path) from which all files must be nested under.
@@ -793,7 +810,7 @@ impl Project {
     }
 
     #[turbo_tasks::function]
-    pub(super) fn next_config(&self) -> Vc<NextConfig> {
+    pub fn next_config(&self) -> Vc<NextConfig> {
         *self.next_config
     }
 
@@ -866,71 +883,111 @@ impl Project {
     }
 
     #[turbo_tasks::function]
-    pub async fn get_all_endpoints(self: Vc<Self>, app_dir_only: bool) -> Result<Vc<Endpoints>> {
-        let mut endpoints = Vec::new();
+    pub async fn get_all_endpoint_groups(
+        self: Vc<Self>,
+        app_dir_only: bool,
+    ) -> Result<Vc<EndpointGroups>> {
+        let mut endpoint_groups = Vec::new();
 
         let entrypoints = self.entrypoints().await?;
-        let mut is_pages_entries_added = false;
+        let mut add_pages_entries = false;
 
         if let Some(middleware) = &entrypoints.middleware {
-            endpoints.push(middleware.endpoint);
+            endpoint_groups.push((
+                EndpointGroupKey::Middleware,
+                EndpointGroup::from(middleware.endpoint),
+            ));
         }
 
         if let Some(instrumentation) = &entrypoints.instrumentation {
-            endpoints.push(instrumentation.node_js);
-            endpoints.push(instrumentation.edge);
+            endpoint_groups.push((
+                EndpointGroupKey::Instrumentation,
+                EndpointGroup::from(instrumentation.node_js),
+            ));
+            endpoint_groups.push((
+                EndpointGroupKey::InstrumentationEdge,
+                EndpointGroup::from(instrumentation.edge),
+            ));
         }
 
-        for (_, route) in entrypoints.routes.iter() {
+        for (key, route) in entrypoints.routes.iter() {
             match route {
                 Route::Page {
                     html_endpoint,
                     data_endpoint,
                 } => {
                     if !app_dir_only {
-                        endpoints.push(*html_endpoint);
-                        if !is_pages_entries_added {
-                            endpoints.push(entrypoints.pages_error_endpoint);
-                            endpoints.push(entrypoints.pages_app_endpoint);
-                            endpoints.push(entrypoints.pages_document_endpoint);
-                            is_pages_entries_added = true;
-                        }
-                        // This only exists in development mode for HMR
-                        if let Some(data_endpoint) = data_endpoint {
-                            endpoints.push(*data_endpoint);
-                        }
+                        endpoint_groups.push((
+                            EndpointGroupKey::Route(key.clone()),
+                            EndpointGroup {
+                                primary: vec![*html_endpoint],
+                                // This only exists in development mode for HMR
+                                additional: data_endpoint.iter().copied().collect(),
+                            },
+                        ));
+                        add_pages_entries = true;
                     }
                 }
                 Route::PageApi { endpoint } => {
                     if !app_dir_only {
-                        endpoints.push(*endpoint);
-                        if !is_pages_entries_added {
-                            endpoints.push(entrypoints.pages_error_endpoint);
-                            endpoints.push(entrypoints.pages_app_endpoint);
-                            endpoints.push(entrypoints.pages_document_endpoint);
-                            is_pages_entries_added = true;
-                        }
+                        endpoint_groups.push((
+                            EndpointGroupKey::Route(key.clone()),
+                            EndpointGroup::from(*endpoint),
+                        ));
+                        add_pages_entries = true;
                     }
                 }
                 Route::AppPage(page_routes) => {
-                    for AppPageRoute {
-                        original_name: _,
-                        html_endpoint,
-                        rsc_endpoint: _,
-                    } in page_routes
-                    {
-                        endpoints.push(*html_endpoint);
-                    }
+                    endpoint_groups.push((
+                        EndpointGroupKey::Route(key.clone()),
+                        EndpointGroup {
+                            primary: page_routes.iter().map(|r| r.html_endpoint).collect(),
+                            additional: Vec::new(),
+                        },
+                    ));
                 }
                 Route::AppRoute {
                     original_name: _,
                     endpoint,
                 } => {
-                    endpoints.push(*endpoint);
+                    endpoint_groups.push((
+                        EndpointGroupKey::Route(key.clone()),
+                        EndpointGroup::from(*endpoint),
+                    ));
                 }
                 Route::Conflict => {
                     tracing::info!("WARN: conflict");
                 }
+            }
+        }
+
+        if add_pages_entries {
+            endpoint_groups.push((
+                EndpointGroupKey::PagesError,
+                EndpointGroup::from(entrypoints.pages_error_endpoint),
+            ));
+            endpoint_groups.push((
+                EndpointGroupKey::PagesApp,
+                EndpointGroup::from(entrypoints.pages_app_endpoint),
+            ));
+            endpoint_groups.push((
+                EndpointGroupKey::PagesDocument,
+                EndpointGroup::from(entrypoints.pages_document_endpoint),
+            ));
+        }
+
+        Ok(Vc::cell(endpoint_groups))
+    }
+
+    #[turbo_tasks::function]
+    pub async fn get_all_endpoints(self: Vc<Self>, app_dir_only: bool) -> Result<Vc<Endpoints>> {
+        let mut endpoints = Vec::new();
+        for (_key, group) in self.get_all_endpoint_groups(app_dir_only).await?.iter() {
+            for &endpoint in group.primary.iter() {
+                endpoints.push(endpoint);
+            }
+            for &endpoint in group.additional.iter() {
+                endpoints.push(endpoint);
             }
         }
 
@@ -999,7 +1056,9 @@ impl Project {
     }
 
     #[turbo_tasks::function]
-    pub async fn whole_app_module_graphs(self: ResolvedVc<Self>) -> Result<Vc<ModuleGraphs>> {
+    pub async fn whole_app_module_graphs(
+        self: ResolvedVc<Self>,
+    ) -> Result<Vc<BaseAndFullModuleGraph>> {
         async move {
             let module_graphs_op = whole_app_module_graph_operation(self);
             let module_graphs_vc = if self.next_mode().await?.is_production() {
@@ -1843,6 +1902,15 @@ impl Project {
             Ok(Vc::cell(None))
         }
     }
+
+    #[turbo_tasks::function]
+    pub async fn with_next_config(&self, next_config: Vc<NextConfig>) -> Result<Vc<Self>> {
+        Ok(Self {
+            next_config: next_config.to_resolved().await?,
+            ..(*self).clone()
+        }
+        .cell())
+    }
 }
 
 // This is a performance optimization. This function is a root aggregation function that
@@ -1850,7 +1918,7 @@ impl Project {
 #[turbo_tasks::function(operation)]
 async fn whole_app_module_graph_operation(
     project: ResolvedVc<Project>,
-) -> Result<Vc<ModuleGraphs>> {
+) -> Result<Vc<BaseAndFullModuleGraph>> {
     mark_root();
 
     let should_trace = project.next_mode().await?.is_production();
@@ -1868,7 +1936,7 @@ async fn whole_app_module_graph_operation(
     );
 
     let full = ModuleGraph::from_graphs(vec![base_single_module_graph, additional_module_graph]);
-    Ok(ModuleGraphs {
+    Ok(BaseAndFullModuleGraph {
         base: base.to_resolved().await?,
         full: full.to_resolved().await?,
     }
@@ -1876,7 +1944,7 @@ async fn whole_app_module_graph_operation(
 }
 
 #[turbo_tasks::value(shared)]
-pub struct ModuleGraphs {
+pub struct BaseAndFullModuleGraph {
     pub base: ResolvedVc<ModuleGraph>,
     pub full: ResolvedVc<ModuleGraph>,
 }
