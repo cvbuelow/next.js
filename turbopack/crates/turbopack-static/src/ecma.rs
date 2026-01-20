@@ -5,9 +5,9 @@ use turbopack_core::{
     asset::{Asset, AssetContent},
     chunk::{ChunkItem, ChunkType, ChunkableModule, ChunkingContext},
     ident::AssetIdent,
-    module::Module,
+    module::{Module, ModuleSideEffects},
     module_graph::ModuleGraph,
-    output::{OutputAsset, OutputAssets},
+    output::{OutputAsset, OutputAssetsReference, OutputAssetsWithReferenced},
     source::Source,
 };
 use turbopack_ecmascript::{
@@ -57,6 +57,16 @@ impl Module for StaticUrlJsModule {
         }
         ident
     }
+
+    #[turbo_tasks::function]
+    fn source(&self) -> Vc<turbopack_core::source::OptionSource> {
+        Vc::cell(Some(self.source))
+    }
+
+    #[turbo_tasks::function]
+    fn side_effects(self: Vc<Self>) -> Vc<ModuleSideEffects> {
+        ModuleSideEffects::SideEffectFree.cell()
+    }
 }
 
 #[turbo_tasks::value_impl]
@@ -93,7 +103,7 @@ impl ChunkableModule for StaticUrlJsModule {
 impl EcmascriptChunkPlaceable for StaticUrlJsModule {
     #[turbo_tasks::function]
     fn get_exports(&self) -> Vc<EcmascriptExports> {
-        EcmascriptExports::Value.into()
+        EcmascriptExports::Value.cell()
     }
 }
 
@@ -106,15 +116,20 @@ struct StaticUrlJsChunkItem {
 }
 
 #[turbo_tasks::value_impl]
+impl OutputAssetsReference for StaticUrlJsChunkItem {
+    #[turbo_tasks::function]
+    fn references(&self) -> Vc<OutputAssetsWithReferenced> {
+        OutputAssetsWithReferenced::from_assets(Vc::cell(vec![ResolvedVc::upcast(
+            self.static_asset,
+        )]))
+    }
+}
+
+#[turbo_tasks::value_impl]
 impl ChunkItem for StaticUrlJsChunkItem {
     #[turbo_tasks::function]
     fn asset_ident(&self) -> Vc<AssetIdent> {
         self.module.ident()
-    }
-
-    #[turbo_tasks::function]
-    fn references(&self) -> Vc<OutputAssets> {
-        Vc::cell(vec![ResolvedVc::upcast(self.static_asset)])
     }
 
     #[turbo_tasks::function]
@@ -152,6 +167,6 @@ impl EcmascriptChunkItem for StaticUrlJsChunkItem {
             .into(),
             ..Default::default()
         }
-        .into())
+        .cell())
     }
 }

@@ -16,9 +16,9 @@ import { startTransition } from 'react'
 import { isThenable } from '../../shared/lib/is-thenable'
 import {
   FetchStrategy,
-  prefetch as prefetchWithSegmentCache,
   type PrefetchTaskFetchStrategy,
-} from './segment-cache'
+} from './segment-cache/types'
+import { prefetch as prefetchWithSegmentCache } from './segment-cache/prefetch'
 import { dispatchAppRouterAction } from './use-action-queue'
 import { addBasePath } from '../add-base-path'
 import { isExternalURL } from './app-router-utils'
@@ -79,13 +79,7 @@ function runRemainingActions(
     // after the navigation has already finished and the queue is empty
     if (actionQueue.needsRefresh) {
       actionQueue.needsRefresh = false
-      actionQueue.dispatch(
-        {
-          type: ACTION_REFRESH,
-          origin: window.location.origin,
-        },
-        setState
-      )
+      actionQueue.dispatch({ type: ACTION_REFRESH }, setState)
     }
   }
 }
@@ -347,10 +341,6 @@ export const publicAppRouterInstance: AppRouterInstance = {
           fetchStrategy = FetchStrategy.Full
           break
         }
-        case PrefetchKind.TEMPORARY: {
-          // This concept doesn't exist in the segment cache implementation.
-          return
-        }
         default: {
           prefetchKind satisfies never
           // Despite typescript thinking that this can't happen,
@@ -383,7 +373,6 @@ export const publicAppRouterInstance: AppRouterInstance = {
     startTransition(() => {
       dispatchAppRouterAction({
         type: ACTION_REFRESH,
-        origin: window.location.origin,
       })
     })
   },
@@ -396,7 +385,6 @@ export const publicAppRouterInstance: AppRouterInstance = {
       startTransition(() => {
         dispatchAppRouterAction({
           type: ACTION_HMR_REFRESH,
-          origin: window.location.origin,
         })
       })
     }

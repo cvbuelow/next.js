@@ -317,6 +317,36 @@ macro_rules! generate_inner_storage_internal {
         $crate::generate_inner_storage_internal!(update: $self, $key, $update: $($config)+)
     };
 
+    // fn extend
+    (extend: $self:ident, $ty:ident, $items:ident: $tag:ident $key_field:ident => $field:ident,) => {
+        if let CachedDataItemType::$tag = $ty {
+            return $self.$field.extend($items.map(|item| {
+                let pair = turbo_tasks::KeyValuePair::into_key_and_value(item);
+                if let (CachedDataItemKey::$tag { $key_field }, CachedDataItemValue::$tag { value }) = pair {
+                    ($key_field, value)
+                } else {
+                    unreachable!()
+                }
+            }));
+        }
+    };
+    (extend: $self:ident, $ty:ident, $items:ident: $tag:ident => $field:ident,) => {
+        if let CachedDataItemType::$tag = $ty {
+            return $self.$field.extend($items.map(|item| {
+                let pair = turbo_tasks::KeyValuePair::into_key_and_value(item);
+                if let (_, CachedDataItemValue::$tag { value }) = pair {
+                    ((), value)
+                } else {
+                    unreachable!()
+                }
+            }));
+        }
+    };
+    (extend: $self:ident, $ty:ident, $items:ident: $tag:ident $($key_field:ident)? => $field:ident, $($config:tt)+) => {
+        $crate::generate_inner_storage_internal!(extend: $self, $ty, $items: $tag $($key_field)? => $field,);
+        $crate::generate_inner_storage_internal!(extend: $self, $ty, $items: $($config)+)
+    };
+
     // fn get_mut_or_insert_with
     (get_mut_or_insert_with: $self:ident, $key:ident, $insert_with:ident: $tag:ident $key_field:ident => $field:ident,) => {
         if let CachedDataItemKey::$tag { $key_field } = $key {
@@ -424,6 +454,12 @@ macro_rules! generate_inner_storage {
                 use crate::data_storage::Storage;
                 $crate::generate_inner_storage_internal!(CachedDataItem: self, item, value, none, add(value): $($config)*);
                 self.dynamic.add(item)
+            }
+
+            pub fn extend(&mut self, ty: CachedDataItemType, items: impl Iterator<Item = CachedDataItem>) -> bool {
+                use crate::data_storage::Storage;
+                $crate::generate_inner_storage_internal!(extend: self, ty, items: $($config)*);
+                self.dynamic.extend(ty, items)
             }
 
             pub fn insert(&mut self, item: CachedDataItem) -> Option<CachedDataItemValue> {
@@ -1019,22 +1055,25 @@ macro_rules! update {
 }
 
 macro_rules! update_count {
-    ($task:ident, $key:ident $input:tt, -$update:expr) => {{
-        let update = $update;
-        let mut state_change = false;
-        $crate::backend::storage::update!($task, $key $input, |old: Option<_>| {
-            #[allow(unused_comparisons, reason = "type of update might be unsigned, where update < 0 is always false")]
-            if let Some(old) = old {
-                let new = old - update;
-                state_change = old <= 0 && new > 0 || old > 0 && new <= 0;
-                (new != 0).then_some(new)
-            } else {
-                state_change = update < 0;
-                (update != 0).then_some(-update)
+    ($task:ident, $key:ident $input:tt, -$update:expr) => {
+        match $update {
+            update => {
+                let mut state_change = false;
+                $crate::backend::storage::update!($task, $key $input, |old: Option<_>| {
+                    #[allow(unused_comparisons, reason = "type of update might be unsigned, where update < 0 is always false")]
+                    if let Some(old) = old {
+                        let new = old - update;
+                        state_change = old <= 0 && new > 0 || old > 0 && new <= 0;
+                        (new != 0).then_some(new)
+                    } else {
+                        state_change = update < 0;
+                        (update != 0).then_some(-update)
+                    }
+                });
+                state_change
             }
-        });
-        state_change
-    }};
+        }
+    };
     ($task:ident, $key:ident $input:tt, $update:expr) => {
         match $update {
             update => {
@@ -1055,8 +1094,44 @@ macro_rules! update_count {
     };
     ($task:ident, $key:ident, -$update:expr) => {
         $crate::backend::storage::update_count!($task, $key {}, -$update)
-    };    ($task:ident, $key:ident, $update:expr) => {
+    };
+    ($task:ident, $key:ident, $update:expr) => {
         $crate::backend::storage::update_count!($task, $key {}, $update)
+    };
+}
+
+macro_rules! update_count_and_get {
+    ($task:ident, $key:ident $input:tt, -$update:expr) => {
+        match $update {
+            update => {
+                let mut new = 0;
+                $crate::backend::storage::update!($task, $key $input, |old: Option<_>| {
+                    let old = old.unwrap_or(0);
+                    new = old - update;
+                    (new != 0).then_some(new)
+                });
+                new
+            }
+        }
+    };
+    ($task:ident, $key:ident $input:tt, $update:expr) => {
+        match $update {
+            update => {
+                let mut new = 0;
+                $crate::backend::storage::update!($task, $key $input, |old: Option<_>| {
+                    let old = old.unwrap_or(0);
+                    new = old + update;
+                    (new != 0).then_some(new)
+                });
+                new
+            }
+        }
+    };
+    ($task:ident, $key:ident, -$update:expr) => {
+        $crate::backend::storage::update_count_and_get!($task, $key {}, -$update)
+    };
+    ($task:ident, $key:ident, $update:expr) => {
+        $crate::backend::storage::update_count_and_get!($task, $key {}, $update)
     };
 }
 
@@ -1086,6 +1161,7 @@ pub(crate) use iter_many;
 pub(crate) use remove;
 pub(crate) use update;
 pub(crate) use update_count;
+pub(crate) use update_count_and_get;
 
 pub struct SnapshotGuard<'l> {
     storage: &'l Storage,

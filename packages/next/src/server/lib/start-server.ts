@@ -22,15 +22,13 @@ import { exec } from 'child_process'
 import Watchpack from 'next/dist/compiled/watchpack'
 import * as Log from '../../build/output/log'
 import setupDebug from 'next/dist/compiled/debug'
-import {
-  RESTART_EXIT_CODE,
-  getFormattedDebugAddress,
-  getNodeDebugType,
-  isDebugAddressEphemeral,
-} from './utils'
+import { RESTART_EXIT_CODE } from './utils'
 import { formatHostname } from './format-hostname'
 import { initialize } from './router-server'
-import { CONFIG_FILES } from '../../shared/lib/constants'
+import {
+  CONFIG_FILES,
+  PHASE_DEVELOPMENT_SERVER,
+} from '../../shared/lib/constants'
 import { getStartServerInfo, logStartInfo } from './app-info-log'
 import { validateTurboNextConfig } from '../../lib/turbopack-warning'
 import { type Span, trace, flushAllTraces } from '../../trace'
@@ -306,8 +304,6 @@ export async function startServer(
 
   await new Promise<void>((resolve) => {
     server.on('listening', async () => {
-      const nodeDebugType = getNodeDebugType()
-
       const addr = server.address()
       const actualHostname = formatHostname(
         typeof addr === 'object'
@@ -346,17 +342,6 @@ export async function startServer(
         : null
 
       const appUrl = `${protocol}://${formattedHostname}:${port}`
-
-      if (nodeDebugType) {
-        const formattedDebugAddress = getFormattedDebugAddress()
-        const isEphemeral = isDebugAddressEphemeral()
-        Log.info(
-          `the --${nodeDebugType} option was detected` +
-            (isEphemeral
-              ? ''
-              : `, the Next.js router server should be inspected at ${formattedDebugAddress}.`)
-        )
-      }
 
       // Store the selected port to:
       // - expose it to render workers
@@ -436,7 +421,10 @@ export async function startServer(
                     >
                   | undefined
                 if (telemetry) {
-                  await telemetry.flush()
+                  // Use flushDetached to avoid blocking process exit
+                  // Each process writes to a unique file (_events_${pid}.json)
+                  // to avoid race conditions with the parent process
+                  telemetry.flushDetached('dev', dir)
                 }
               } catch (_) {
                 // Ignore telemetry errors during cleanup
@@ -489,10 +477,10 @@ export async function startServer(
 
         Log.event(`Ready in ${formatDurationText}`)
 
-        if (process.env.TURBOPACK) {
+        if (process.env.TURBOPACK && isDev) {
           await validateTurboNextConfig({
             dir: serverOptions.dir,
-            isDev: serverOptions.isDev,
+            configPhase: PHASE_DEVELOPMENT_SERVER,
           })
         }
       } catch (err) {

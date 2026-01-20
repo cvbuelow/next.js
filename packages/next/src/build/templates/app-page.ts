@@ -21,12 +21,11 @@ import {
   createOpaqueFallbackRouteParams,
   type OpaqueFallbackRouteParams,
 } from '../../server/request/fallback-params'
-import { setReferenceManifestsSingleton } from '../../server/app-render/encryption-utils'
+import { setManifestsSingleton } from '../../server/app-render/manifests-singleton'
 import {
   isHtmlBotRequest,
   shouldServeStreamingMetadata,
 } from '../../server/lib/streaming-metadata'
-import { createServerModuleMap } from '../../server/app-render/action-utils'
 import { normalizeAppPath } from '../../shared/lib/router/utils/app-paths'
 import { getIsPossibleServerAction } from '../../server/lib/server-action-request-meta'
 import {
@@ -51,6 +50,7 @@ import {
   CACHE_ONE_YEAR,
   HTML_CONTENT_TYPE_HEADER,
   NEXT_CACHE_TAGS_HEADER,
+  NEXT_RESUME_HEADER,
 } from '../../lib/constants'
 import type { CacheControl } from '../../server/lib/cache-control'
 import { ENCODED_TAGS } from '../../server/stream-utils/encoded-tags'
@@ -121,6 +121,10 @@ export async function handler(
   if (routeModule.isDev) {
     addRequestMeta(req, 'devRequestTimingInternalsEnd', process.hrtime.bigint())
   }
+  const isMinimalMode = Boolean(
+    process.env.MINIMAL_MODE || getRequestMeta(req, 'minimalMode')
+  )
+
   let srcPage = 'VAR_DEFINITION_PAGE'
 
   // turbopack doesn't normalize `/index` in the page name
@@ -134,10 +138,6 @@ export async function handler(
   }
   const multiZoneDraftMode = process.env
     .__NEXT_MULTI_ZONE_DRAFT_MODE as any as boolean
-
-  const isMinimalMode = Boolean(
-    process.env.MINIMAL_MODE || getRequestMeta(req, 'minimalMode')
-  )
 
   const prepareResult = await routeModule.prepare(req, res, {
     srcPage,
@@ -170,6 +170,7 @@ export async function handler(
     nextConfig,
     parsedUrl,
     interceptionRoutePatterns,
+    deploymentId,
   } = prepareResult
 
   const normalizedSrcPage = normalizeAppPath(srcPage)
@@ -219,6 +220,25 @@ export async function handler(
     nextConfig.experimental.ppr
   )
 
+  if (
+    !getRequestMeta(req, 'postponed') &&
+    couldSupportPPR &&
+    req.headers[NEXT_RESUME_HEADER] === '1' &&
+    req.method === 'POST'
+  ) {
+    // Decode the postponed state from the request body, it will come as
+    // an array of buffers, so collect them and then concat them to form
+    // the string.
+
+    const body: Array<Buffer> = []
+    for await (const chunk of req) {
+      body.push(chunk)
+    }
+    const postponed = Buffer.concat(body).toString('utf8')
+
+    addRequestMeta(req, 'postponed', postponed)
+  }
+
   // When enabled, this will allow the use of the `?__nextppronly` query to
   // enable debugging of the static shell.
   const hasDebugStaticShellQuery =
@@ -267,8 +287,15 @@ export async function handler(
   // If PPR is enabled, and this is a RSC request (but not a prefetch), then
   // we can use this fact to only generate the flight data for the request
   // because we can't cache the HTML (as it's also dynamic).
-  const isDynamicRSCRequest =
+  let isDynamicRSCRequest =
     isRoutePPREnabled && isRSCRequest && !isPrefetchRSCRequest
+
+  // During a PPR revalidation, the RSC request is not dynamic if we do not have the postponed data.
+  // We only attach the postponed data during a resume. If there's no postponed data, then it must be a revalidation.
+  // This is to ensure that we don't bypass the cache during a revalidation.
+  if (isMinimalMode) {
+    isDynamicRSCRequest = isDynamicRSCRequest && !!minimalPostponed
+  }
 
   // Need to read this before it's stripped by stripFlightHeaders. We don't
   // need to transfer it to the request meta because it's only read
@@ -373,13 +400,10 @@ export async function handler(
   // set the reference manifests to our global store so Server Action's
   // encryption util can access to them at the top level of the page module.
   if (serverActionsManifest && clientReferenceManifest) {
-    setReferenceManifestsSingleton({
+    setManifestsSingleton({
       page: srcPage,
       clientReferenceManifest,
       serverActionsManifest,
-      serverModuleMap: createServerModuleMap({
-        serverActionsManifest,
-      }),
     })
   }
 
@@ -513,11 +537,10 @@ export async function handler(
           nextFontManifest,
           reactLoadableManifest,
           subresourceIntegrityManifest,
-          serverActionsManifest,
-          clientReferenceManifest,
           setCacheStatus: routerServerContext?.setCacheStatus,
           setIsrStatus: routerServerContext?.setIsrStatus,
           setReactDebugChannel: routerServerContext?.setReactDebugChannel,
+          sendErrorsToBrowser: routerServerContext?.sendErrorsToBrowser,
 
           dir:
             process.env.NEXT_RUNTIME === 'nodejs'
@@ -537,7 +560,7 @@ export async function handler(
           trailingSlash: nextConfig.trailingSlash,
           images: nextConfig.images,
           previewProps: prerenderManifest.preview,
-          deploymentId: nextConfig.deploymentId,
+          deploymentId: deploymentId,
           enableTainting: nextConfig.experimental.taint,
           htmlLimitedBots: nextConfig.htmlLimitedBots,
           reactMaxHeadersLength: nextConfig.reactMaxHeadersLength,
@@ -563,9 +586,6 @@ export async function handler(
             isRoutePPREnabled,
             expireTime: nextConfig.expireTime,
             staleTimes: nextConfig.experimental.staleTimes,
-            clientSegmentCache: Boolean(
-              nextConfig.experimental.clientSegmentCache
-            ),
             dynamicOnHover: Boolean(nextConfig.experimental.dynamicOnHover),
             inlineCss: Boolean(nextConfig.experimental.inlineCss),
             authInterrupts: Boolean(nextConfig.experimental.authInterrupts),
@@ -581,11 +601,17 @@ export async function handler(
           },
           onAfterTaskError: () => {},
 
-          onInstrumentationRequestError: (error, _request, errorContext) =>
+          onInstrumentationRequestError: (
+            error,
+            _request,
+            errorContext,
+            silenceLog
+          ) =>
             routeModule.onRequestError(
               req,
               error,
               errorContext,
+              silenceLog,
               routerServerContext
             ),
           err: getRequestMeta(req, 'invokeError'),
@@ -1389,6 +1415,7 @@ export async function handler(
     }
   } catch (err) {
     if (!(err instanceof NoFallbackError)) {
+      const silenceLog = false
       await routeModule.onRequestError(
         req,
         err,
@@ -1401,6 +1428,7 @@ export async function handler(
             isOnDemandRevalidate,
           }),
         },
+        silenceLog,
         routerServerContext
       )
     }

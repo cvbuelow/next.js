@@ -11,6 +11,10 @@ import { workAsyncStorage } from '../../app-render/work-async-storage.external'
 import { workUnitAsyncStorage } from '../../app-render/work-unit-async-storage.external'
 import { DynamicServerError } from '../../../client/components/hooks-server-context'
 import { InvariantError } from '../../../shared/lib/invariant-error'
+import {
+  ActionDidRevalidateDynamicOnly,
+  ActionDidRevalidateStaticAndDynamic as ActionDidRevalidate,
+} from '../../../shared/lib/action-revalidation-kind'
 
 type CacheLifeConfig = {
   expire?: number
@@ -55,7 +59,7 @@ export function updateTag(tag: string) {
 /**
  * This function allows you to refresh client cache from server actions.
  * It's useful as dynamic data can be cached on the client which won't
- * be refreshed by expireTag
+ * be refreshed by updateTag
  */
 export function refresh() {
   const workStore = workAsyncStorage.getStore()
@@ -73,8 +77,9 @@ export function refresh() {
   }
 
   if (workStore) {
-    // TODO: break this to it's own field
-    workStore.pathWasRevalidated = true
+    // The Server Action version of refresh() only revalidates the dynamic data
+    // on the client. It doesn't affect cached data.
+    workStore.pathWasRevalidated = ActionDidRevalidateDynamicOnly
   }
 }
 
@@ -179,6 +184,8 @@ function revalidate(
           // status being flipped when revalidating a static page with a server
           // action.
           workUnitStore.usedDynamic = true
+          // TODO(restart-on-cache-miss): we should do a sync IO error here in dev
+          // to match prerender behavior
         }
         break
       default:
@@ -224,6 +231,6 @@ function revalidate(
 
   if (!profile || cacheLife?.expire === 0) {
     // TODO: only revalidate if the path matches
-    store.pathWasRevalidated = true
+    store.pathWasRevalidated = ActionDidRevalidate
   }
 }

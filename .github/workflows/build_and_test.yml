@@ -2,7 +2,7 @@ name: build-and-test
 
 on:
   push:
-    branches: ['canary']
+    branches: ['next-16-1']
   pull_request:
     types: [opened, synchronize]
 
@@ -33,14 +33,13 @@ jobs:
         id: docs-change
         run: |
           echo "DOCS_ONLY<<EOF" >> $GITHUB_OUTPUT;
-          echo "$(node scripts/run-for-change.js --not --type docs --exec echo 'false')" >> $GITHUB_OUTPUT;
+          echo "$(node scripts/run-for-change.mjs --not --type docs --exec echo 'false')" >> $GITHUB_OUTPUT;
           echo 'EOF' >> $GITHUB_OUTPUT
 
       - name: check for release
         id: is-release
         run: |
-          RELEASE_CHECK=$(node ./scripts/check-is-release.js 2> /dev/null || :)
-          if [[ $RELEASE_CHECK == "new-release" || $RELEASE_CHECK == v* ]];
+          if [[ $(node ./scripts/check-is-release.js 2> /dev/null || :) == v* ]];
             then
               echo "IS_RELEASE=true" >> $GITHUB_OUTPUT
             else
@@ -613,7 +612,7 @@ jobs:
     name: Test new tests for flakes (dev)
     needs: ['optimize-ci', 'changes', 'build-native', 'build-next']
     # test-new-tests-if
-    if: ${{ needs.optimize-ci.outputs.skip == 'false' && needs.changes.outputs.docs-only == 'false' }}
+    if: false
     # test-new-tests-end-if
 
     strategy:
@@ -637,7 +636,7 @@ jobs:
     name: Test new tests for flakes (prod)
     needs: ['optimize-ci', 'changes', 'build-native', 'build-next']
     # test-new-tests-if
-    if: ${{ needs.optimize-ci.outputs.skip == 'false' && needs.changes.outputs.docs-only == 'false' }}
+    if: false
     # test-new-tests-end-if
 
     strategy:
@@ -658,10 +657,9 @@ jobs:
 
   test-new-tests-deploy:
     name: Test new tests when deployed
-    needs:
-      ['optimize-ci', 'test-prod', 'test-new-tests-dev', 'test-new-tests-start']
+    needs: ['optimize-ci', 'test-prod', 'test-new-tests-start']
     # test-new-tests-if
-    if: ${{ needs.optimize-ci.outputs.skip == 'false' }}
+    if: false
     # test-new-tests-end-if
 
     strategy:
@@ -683,15 +681,9 @@ jobs:
 
   test-new-tests-deploy-cache-components:
     name: Test new tests when deployed (cache components)
-    needs:
-      [
-        'optimize-ci',
-        'test-cache-components-prod',
-        'test-new-tests-dev',
-        'test-new-tests-start',
-      ]
+    needs: ['optimize-ci', 'test-cache-components-prod']
     # test-new-tests-if
-    if: ${{ needs.optimize-ci.outputs.skip == 'false' }}
+    if: false
     # test-new-tests-end-if
 
     strategy:
@@ -791,8 +783,8 @@ jobs:
         node run-tests.js \
           --concurrency 4 \
           test/production/pages-dir/production/test/index.test.ts \
-          test/integration/css-client-nav/test/index.test.js \
-          test/integration/rewrites-has-condition/test/index.test.js \
+          test/integration/css-client-nav/test/index.test.ts \
+          test/integration/rewrites-has-condition/test/index.test.ts \
           test/integration/create-next-app/index.test.ts \
           test/integration/create-next-app/package-manager/pnpm.test.ts
       stepName: 'test-integration-windows'
@@ -903,6 +895,7 @@ jobs:
 
     uses: ./.github/workflows/build_reusable.yml
     with:
+      browser: 'firefox webkit'
       afterBuild: |
         pnpm playwright install
 
@@ -911,10 +904,12 @@ jobs:
         export IS_WEBPACK_TEST=1
 
         BROWSER_NAME=firefox node run-tests.js \
-          test/production/pages-dir/production/test/index.test.ts
+          test/production/pages-dir/production/test/index.test.ts \
+          test/production/chunk-load-failure/chunk-load-failure.test.ts
 
         NEXT_TEST_MODE=start BROWSER_NAME=safari node run-tests.js \
           test/production/pages-dir/production/test/index.test.ts \
+          test/production/chunk-load-failure/chunk-load-failure.test.ts \
           test/e2e/basepath/basepath.test.ts \
           test/e2e/basepath/error-pages.test.ts
 
@@ -1018,10 +1013,6 @@ jobs:
         'test-next-swc-wasm',
         'test-turbopack-dev',
         'test-turbopack-integration',
-        'test-new-tests-dev',
-        'test-new-tests-start',
-        'test-new-tests-deploy',
-        'test-new-tests-deploy-cache-components',
         'test-turbopack-production',
         'test-turbopack-production-integration',
         'test-unit-windows',

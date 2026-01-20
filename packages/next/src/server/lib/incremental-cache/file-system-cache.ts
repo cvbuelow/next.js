@@ -17,7 +17,6 @@ import {
   NEXT_CACHE_TAGS_HEADER,
   NEXT_DATA_SUFFIX,
   NEXT_META_SUFFIX,
-  RSC_PREFETCH_SUFFIX,
   RSC_SEGMENT_SUFFIX,
   RSC_SEGMENTS_DIR_SUFFIX,
   RSC_SUFFIX,
@@ -231,10 +230,10 @@ export default class FileSystemCache implements CacheHandler {
             }
 
             let rscData: Buffer | undefined
-            if (!ctx.isFallback) {
+            if (!ctx.isFallback && !ctx.isRoutePPREnabled) {
               rscData = await this.fs.readFile(
                 this.getFilePath(
-                  `${key}${ctx.isRoutePPREnabled ? RSC_PREFETCH_SUFFIX : RSC_SUFFIX}`,
+                  `${key}${RSC_SUFFIX}`,
                   IncrementalCacheKind.APP_PAGE
                 )
               )
@@ -412,22 +411,14 @@ export default class FileSystemCache implements CacheHandler {
       } else {
         writer.append(htmlPath, data.html)
         // Fallbacks don't generate a data file.
-        if (!ctx.fetchCache && !ctx.isFallback) {
-          writer.append(
-            this.getFilePath(
-              `${key}${
-                isAppPath
-                  ? ctx.isRoutePPREnabled
-                    ? RSC_PREFETCH_SUFFIX
-                    : RSC_SUFFIX
-                  : NEXT_DATA_SUFFIX
-              }`,
-              isAppPath
-                ? IncrementalCacheKind.APP_PAGE
-                : IncrementalCacheKind.PAGES
-            ),
-            isAppPath ? data.rscData! : JSON.stringify(data.pageData)
-          )
+        if (!ctx.fetchCache && !ctx.isFallback && !ctx.isRoutePPREnabled) {
+            writer.append(
+              this.getFilePath(
+                `${key}${isAppPath ? RSC_SUFFIX : NEXT_DATA_SUFFIX}`,
+                isAppPath ? IncrementalCacheKind.APP_PAGE : IncrementalCacheKind.PAGES
+              ),
+              isAppPath ? data.rscData! : JSON.stringify(data.pageData)
+            )
         }
 
         if (data?.kind === CachedRouteKind.APP_PAGE) {

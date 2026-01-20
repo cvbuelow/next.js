@@ -261,7 +261,7 @@ export interface RequestMeta {
   /**
    * DEV only: The fallback params that should be used when validating prerenders during dev
    */
-  devValidatingFallbackParams?: OpaqueFallbackRouteParams
+  devFallbackParams?: OpaqueFallbackRouteParams
 
   /**
    * DEV only: Request timings in process.hrtime.bigint()
@@ -270,6 +270,11 @@ export interface RequestMeta {
   devRequestTimingMiddlewareStart?: bigint
   devRequestTimingMiddlewareEnd?: bigint
   devRequestTimingInternalsEnd?: bigint
+
+  /**
+   * DEV only: The duration of getStaticPaths/generateStaticParams in process.hrtime.bigint()
+   */
+  devGenerateStaticParamsDuration?: bigint
 }
 
 /**

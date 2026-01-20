@@ -1,20 +1,19 @@
 use std::future::Future;
 
 use anyhow::Result;
-use rustc_hash::FxHashSet;
-use serde::{Deserialize, Serialize};
+use bincode::{Decode, Encode};
 use tracing::{Instrument, Level, Span};
 use turbo_rcstr::RcStr;
 use turbo_tasks::{
-    FxIndexSet, NonLocalValue, ReadRef, ResolvedVc, TryJoinIterExt, Vc,
+    NonLocalValue, ReadRef, ResolvedVc, TryJoinIterExt, Vc,
     debug::ValueDebugFormat,
     graph::{AdjacencyMap, GraphTraversal, Visit, VisitControlFlow},
     trace::TraceRawVcs,
 };
-use turbopack::css::chunk::CssChunkPlaceable;
 use turbopack_core::{
     chunk::ChunkingType, module::Module, reference::primary_chunkable_referenced_modules,
 };
+use turbopack_css::chunk::CssChunkPlaceable;
 
 use crate::{
     next_client_reference::{
@@ -31,30 +30,17 @@ use crate::{
     Eq,
     PartialEq,
     Hash,
-    Serialize,
-    Deserialize,
     Debug,
     ValueDebugFormat,
     TraceRawVcs,
     NonLocalValue,
+    Encode,
+    Decode,
 )]
 pub struct ClientReference {
     pub server_component: Option<ResolvedVc<NextServerComponentModule>>,
     pub ty: ClientReferenceType,
 }
-
-impl ClientReference {
-    pub fn server_component(&self) -> Option<ResolvedVc<NextServerComponentModule>> {
-        self.server_component
-    }
-
-    pub fn ty(&self) -> ClientReferenceType {
-        self.ty
-    }
-}
-
-#[turbo_tasks::value(transparent)]
-pub struct ClientReferences(Vec<ClientReference>);
 
 #[derive(
     Copy,
@@ -62,12 +48,12 @@ pub struct ClientReferences(Vec<ClientReference>);
     Eq,
     PartialEq,
     Hash,
-    Serialize,
-    Deserialize,
     Debug,
     ValueDebugFormat,
     TraceRawVcs,
     NonLocalValue,
+    Encode,
+    Decode,
 )]
 pub enum ClientReferenceType {
     EcmascriptClientReference(ResolvedVc<EcmascriptClientReferenceModule>),
@@ -83,33 +69,6 @@ pub struct ClientReferenceGraphResult {
 }
 
 #[turbo_tasks::value(shared)]
-pub struct VisitedClientReferenceGraphNodes(FxHashSet<FindServerEntriesNode>);
-
-#[turbo_tasks::value_impl]
-impl VisitedClientReferenceGraphNodes {
-    #[turbo_tasks::function]
-    pub fn empty() -> Vc<Self> {
-        VisitedClientReferenceGraphNodes(Default::default()).cell()
-    }
-}
-
-#[turbo_tasks::value(transparent)]
-pub struct ClientReferenceTypes(FxIndexSet<ClientReferenceType>);
-
-#[turbo_tasks::value_impl]
-impl ClientReferenceGraphResult {
-    #[turbo_tasks::function]
-    pub fn types(&self) -> Vc<ClientReferenceTypes> {
-        Vc::cell(
-            self.client_references
-                .iter()
-                .map(|r| r.ty())
-                .collect::<FxIndexSet<_>>(),
-        )
-    }
-}
-
-#[turbo_tasks::value(shared)]
 #[derive(Clone, Debug)]
 pub struct ServerEntries {
     pub server_component_entries: Vec<ResolvedVc<NextServerComponentModule>>,
@@ -122,6 +81,7 @@ pub struct ServerEntries {
 pub async fn find_server_entries(
     entry: ResolvedVc<Box<dyn Module>>,
     include_traced: bool,
+    include_binding_usage: bool,
 ) -> Result<Vc<ServerEntries>> {
     async move {
         let emit_spans = tracing::enabled!(Level::INFO);
@@ -138,8 +98,9 @@ pub async fn find_server_entries(
                     },
                 )],
                 FindServerEntries {
-                    include_traced,
                     emit_spans,
+                    include_traced,
+                    include_binding_usage,
                 },
             )
             .await
@@ -171,23 +132,14 @@ pub async fn find_server_entries(
 }
 
 struct FindServerEntries {
+    emit_spans: bool,
     /// Whether to walk ChunkingType::Traced references
     include_traced: bool,
-    emit_spans: bool,
+    /// Whether to read the binding usage information from modules
+    include_binding_usage: bool,
 }
 
-#[derive(
-    Clone,
-    Eq,
-    PartialEq,
-    Hash,
-    Serialize,
-    Deserialize,
-    Debug,
-    ValueDebugFormat,
-    TraceRawVcs,
-    NonLocalValue,
-)]
+#[derive(Clone, Eq, PartialEq, Hash, Debug, ValueDebugFormat, TraceRawVcs, NonLocalValue)]
 enum FindServerEntriesNode {
     ClientReference,
     ServerComponentEntry(
@@ -214,6 +166,7 @@ impl Visit<FindServerEntriesNode> for FindServerEntries {
 
     fn edges(&mut self, node: &FindServerEntriesNode) -> Self::EdgesFuture {
         let include_traced = self.include_traced;
+        let include_binding_usage = self.include_binding_usage;
         let parent_module = match node {
             // This should never occur since we always skip visiting these
             // nodes' edges.
@@ -226,16 +179,21 @@ impl Visit<FindServerEntriesNode> for FindServerEntries {
         };
         let emit_spans = self.emit_spans;
         async move {
-            // Pass include_traced to reuse the same cached `primary_chunkable_referenced_modules`
-            // task result, but the traced references will be filtered out again afterwards.
-            let referenced_modules =
-                primary_chunkable_referenced_modules(parent_module, include_traced).await?;
+            // Pass include_traced and include_binding_usage to reuse the same cached
+            // `primary_chunkable_referenced_modules` task result, but the traced references will be
+            // filtered out again afterwards.
+            let referenced_modules = primary_chunkable_referenced_modules(
+                parent_module,
+                include_traced,
+                include_binding_usage,
+            )
+            .await?;
 
             let referenced_modules = referenced_modules
                 .iter()
-                .flat_map(|(chunking_type, _, modules)| match chunking_type {
+                .flat_map(|(_, resolved)| match resolved.chunking_type {
                     ChunkingType::Traced => None,
-                    _ => Some(modules.iter()),
+                    _ => Some(resolved.modules.iter()),
                 })
                 .flatten()
                 .map(async |module| {
